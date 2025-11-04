@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Reports - Stock Control App</title>
+    <link rel="stylesheet" href="styles.css">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+    <div class="container">
+        <header class="header">
+            <div class="header-content">
+                <h1><i class="fas fa-chart-bar"></i> Reports & Analytics</h1>
+                <div class="header-actions">
+                    <button onclick="navigateToPage('')" class="btn btn-outline">
+                        <i class="fas fa-home"></i> Home
+                    </button>
+                    <div class="user-info">
+                        <span id="userName"></span>
+                        <button id="logoutBtn" class="btn btn-outline">Logout</button>
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <main class="main-content">
+            <div class="page-header">
+                <h2>Inventory Reports</h2>
+                <div class="report-actions">
+                    <button id="refreshReportsBtn" class="btn btn-primary">
+                        <i class="fas fa-sync"></i> Refresh
+                    </button>
+                    <button id="exportBtn" class="btn btn-success">
+                        <i class="fas fa-download"></i> Export
+                    </button>
+                </div>
+            </div>
+
+            <!-- Summary Cards -->
+            <div class="summary-cards">
+                <div class="summary-card">
+                    <div class="card-icon">
+                        <i class="fas fa-boxes"></i>
+                    </div>
+                    <div class="card-content">
+                        <h3 id="totalItems">-</h3>
+                        <p>Total Items</p>
+                    </div>
+                </div>
+                <div class="summary-card">
+                    <div class="card-icon">
+                        <i class="fas fa-dollar-sign"></i>
+                    </div>
+                    <div class="card-content">
+                        <h3 id="totalValue">-</h3>
+                        <p>Total Value</p>
+                    </div>
+                </div>
+                <div class="summary-card warning">
+                    <div class="card-icon">
+                        <i class="fas fa-exclamation-triangle"></i>
+                    </div>
+                    <div class="card-content">
+                        <h3 id="lowStockItems">-</h3>
+                        <p>Low Stock Items</p>
+                    </div>
+                </div>
+                <div class="summary-card danger">
+                    <div class="card-icon">
+                        <i class="fas fa-times-circle"></i>
+                    </div>
+                    <div class="card-content">
+                        <h3 id="outOfStockItems">-</h3>
+                        <p>Out of Stock</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Charts Section -->
+            <div class="charts-section">
+                <div class="chart-container">
+                    <h3>Inventory by Category</h3>
+                    <canvas id="categoryChart"></canvas>
+                </div>
+                <div class="chart-container">
+                    <h3>Stock Value by Category</h3>
+                    <canvas id="valueChart"></canvas>
+                </div>
+            </div>
+
+            <!-- Reports Tabs -->
+            <div class="reports-tabs">
+                <div class="tab-buttons">
+                    <button class="tab-btn active" onclick="showTab('recent-transactions')">
+                        Recent Transactions
+                    </button>
+                    <button class="tab-btn" onclick="showTab('stock-movement')">
+                        Stock Movement
+                    </button>
+                    <button class="tab-btn" onclick="showTab('user-activity')">
+                        User Activity
+                    </button>
+                    <button class="tab-btn" onclick="showTab('inventory-valuation')">
+                        Inventory Valuation
+                    </button>
+                </div>
+
+                <!-- Recent Transactions Tab -->
+                <div id="recent-transactions" class="tab-content active">
+                    <div class="table-container">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>Item</th>
+                                    <th>Type</th>
+                                    <th>Quantity</th>
+                                    <th>Previous Stock</th>
+                                    <th>New Stock</th>
+                                    <th>User</th>
+                                    <th>Date</th>
+                                </tr>
+                            </thead>
+                            <tbody id="transactionsTableBody">
+                                <tr>
+                                    <td colspan="7" class="loading">Loading transactions...</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Stock Movement Tab -->
+                <div id="stock-movement" class="tab-content">
+                    <div class="filters-section">
+                        <div class="filter-group">
+                            <label for="startDate">Start Date</label>
+                            <input type="date" id="startDate">
+                        </div>
+                        <div class="filter-group">
+                            <label for="endDate">End Date</label>
+                            <input type="date" id="endDate">
+                        </div>
+                        <button id="filterMovementBtn" class="btn btn-primary">Filter</button>
+                    </div>
+                    <div class="table-container">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>Item</th>
+                                    <th>Type</th>
+                                    <th>Quantity</th>
+                                    <th>Previous Stock</th>
+                                    <th>New Stock</th>
+                                    <th>Reason</th>
+                                    <th>User</th>
+                                    <th>Date</th>
+                                </tr>
+                            </thead>
+                            <tbody id="movementTableBody">
+                                <tr>
+                                    <td colspan="8" class="loading">Loading movement data...</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- User Activity Tab -->
+                <div id="user-activity" class="tab-content">
+                    <div class="table-container">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>User</th>
+                                    <th>Email</th>
+                                    <th>Transactions</th>
+                                    <th>Stock In</th>
+                                    <th>Stock Out</th>
+                                    <th>Last Activity</th>
+                                </tr>
+                            </thead>
+                            <tbody id="activityTableBody">
+                                <tr>
+                                    <td colspan="6" class="loading">Loading user activity...</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Inventory Valuation Tab -->
+                <div id="inventory-valuation" class="tab-content">
+                    <div class="valuation-summary">
+                        <div class="valuation-card">
+                            <h4>Total Inventory Value</h4>
+                            <span id="totalInventoryValue">-</span>
+                        </div>
+                        <div class="valuation-card">
+                            <h4>Average Item Value</h4>
+                            <span id="averageItemValue">-</span>
+                        </div>
+                        <div class="valuation-card">
+                            <h4>Total Quantity</h4>
+                            <span id="totalQuantity">-</span>
+                        </div>
+                    </div>
+                    <div class="table-container">
+                        <h4>Top Value Items</h4>
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>Item Name</th>
+                                    <th>Item Code</th>
+                                    <th>Current Stock</th>
+                                    <th>Unit Price</th>
+                                    <th>Total Value</th>
+                                </tr>
+                            </thead>
+                            <tbody id="topValueTableBody">
+                                <tr>
+                                    <td colspan="5" class="loading">Loading top value items...</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script src="app.js"></script>
+    <script src="reports.js"></script>
+</body>
+</html>
