@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, useEffect } from 'react';
 import { api } from '../lib/api';
 import { parseCountsToJson, parseJournalToJson } from '../lib/parser';
 import PasswordProtect from '../components/PasswordProtect';
@@ -11,9 +11,13 @@ function ReconcileContent() {
   const [rowsParsedCounts, setRowsParsedCounts] = useState(0);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
-  const [spStatus, setSpStatus] = useState(null);
-  const [loadingSharePoint, setLoadingSharePoint] = useState(false);
   const [showOnlyVariance, setShowOnlyVariance] = useState(false);
+  const [summaryCollapsed, setSummaryCollapsed] = useState(false);
+  const [outputCollapsed, setOutputCollapsed] = useState(false);
+  const [itemsPerPage, setItemsPerPage] = useState(10);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [refreshingExcel, setRefreshingExcel] = useState(false);
+  const [refreshProgress, setRefreshProgress] = useState('');
 
   // Helper to parse a line with quoted fields
   function splitQuotedLine(line, delimiter) {
@@ -121,8 +125,8 @@ function ReconcileContent() {
     setRowsParsedCounts(entries.length);
     setRowsParsedJournal(bookEntries.length);
     if (!entries.length) {
-      console.warn('No SharePoint rows parsed; first 200 chars:', (countsCsv || '').slice(0, 200));
-      alert('No SharePoint count rows detected. Paste or upload the SharePoint list export.');
+      console.warn('No count rows parsed; first 200 chars:', (countsCsv || '').slice(0, 200));
+      alert('No count rows detected. Please refresh Excel data or upload a file.');
       return;
     }
     
@@ -178,29 +182,71 @@ function ReconcileContent() {
     reader.readAsText(file);
   }
 
-  async function checkSharePointStatus() {
-    try {
-      const { data } = await api.get('/api/sharepoint/status');
-      setSpStatus(data);
-    } catch (e) {
-      setSpStatus({ enabled: false, configured: false, stub: false });
+  // Load synced Excel data from sessionStorage on mount
+  useEffect(() => {
+    const syncedData = sessionStorage.getItem('uploadedCountsFileContent');
+    if (syncedData) {
+      setCountsCsv(syncedData);
+      // Parse to get row count
+      const lines = syncedData.split(/\r?\n/).filter(Boolean);
+      setRowsParsedCounts(lines.length > 1 ? lines.length - 1 : 0); // Subtract header if present
     }
-  }
+  }, []);
 
-  async function fetchSharePointCounts() {
-    setLoadingSharePoint(true);
+  async function handleRefreshExcel() {
+    setRefreshingExcel(true);
+    setRefreshProgress('Opening Excel...');
+    
+    // Progress updates during the refresh process
+    const progressSteps = [
+      { delay: 0, message: 'Opening Excel...' },
+      { delay: 2000, message: 'Running macro RefreshAllData...' },
+      { delay: 5000, message: 'Waiting for data refresh to complete...' },
+      { delay: 10000, message: 'Reading data from worksheet...' },
+    ];
+    
+    const progressInterval = setInterval(() => {
+      const elapsed = Date.now() - (window.excelRefreshStartTime || Date.now());
+      window.excelRefreshStartTime = window.excelRefreshStartTime || Date.now();
+      
+      // Update progress based on elapsed time
+      for (let i = progressSteps.length - 1; i >= 0; i--) {
+        if (elapsed >= progressSteps[i].delay) {
+          setRefreshProgress(progressSteps[i].message);
+          break;
+        }
+      }
+    }, 1000);
+    
     try {
-      const { data } = await api.post('/api/sharepoint/fetch', { type: 'counts' });
-      const entries = Array.isArray(data.entries) ? data.entries : [];
-      // Convert to CSV text for the textarea to keep current flow
-      const header = 'itemCode,counted';
-      const body = entries.map(e => `${e.itemCode || ''},${e.counted != null ? e.counted : ''}`).join('\n');
-      setCountsCsv([header, body].filter(Boolean).join('\n'));
-      setRowsParsedCounts(entries.length);
-    } catch (e) {
-      alert((e?.response?.data?.message) || 'Failed to fetch from SharePoint');
+      window.excelRefreshStartTime = Date.now();
+      const response = await api.post('/api/excel/refresh');
+      
+      clearInterval(progressInterval);
+      
+      if (response.data.success && response.data.csvContent) {
+        setRefreshProgress('Processing data...');
+        // Store the refreshed data in sessionStorage and update countsCsv
+        setCountsCsv(response.data.csvContent);
+        sessionStorage.setItem('uploadedCountsFileContent', response.data.csvContent);
+        
+        // Parse to get row count
+        const lines = response.data.csvContent.split(/\r?\n/).filter(Boolean);
+        setRowsParsedCounts(lines.length > 1 ? lines.length - 1 : 0); // Subtract header if present
+        
+        setRefreshProgress('');
+      } else {
+        setRefreshProgress('');
+        alert(`Error: ${response.data.message || 'Unknown error'}`);
+      }
+    } catch (error) {
+      clearInterval(progressInterval);
+      console.error('Error refreshing Excel:', error);
+      setRefreshProgress('');
+      alert(`Error: ${error.response?.data?.message || error.message || 'Failed to refresh Excel'}`);
     } finally {
-      setLoadingSharePoint(false);
+      setRefreshingExcel(false);
+      window.excelRefreshStartTime = null;
     }
   }
 
@@ -298,237 +344,441 @@ function ReconcileContent() {
     return filteredVariances.slice(start, start + pageSize);
   }, [filteredVariances, page, pageSize]);
 
-  return (
-    <div className="grid gap-4">
-      <h2 className="text-xl font-semibold">Reconcile (Journal vs SharePoint Counts)</h2>
-      <div className="grid gap-6 sm:max-w-4xl">
-        <div className="flex items-center justify-between">
-          <button onClick={checkSharePointStatus} className="px-2 py-1 rounded border border-gray-300 dark:border-gray-600 text-xs">Check SharePoint status</button>
-          {spStatus && (
-            <div className="text-xs text-gray-600 dark:text-gray-400">
-              {spStatus.configured ? 'SharePoint configured' : 'SharePoint not configured'}{spStatus.stub ? ' (stub enabled)' : ''}
+  // Render variance output grouped by bin location (similar to Summary page)
+  function renderVarianceOutput() {
+    if (variances.length === 0) return null;
+    
+    const variancesWithVariance = variances.filter(v => v.variance !== 0);
+    
+    // Group by bin location
+    const byBinLocation = new Map();
+    const noBinLocation = [];
+    
+    variancesWithVariance.forEach(v => {
+      const binLocs = v.binLocations || [];
+      if (binLocs.length === 0) {
+        noBinLocation.push(v);
+      } else {
+        binLocs.forEach(bin => {
+          if (!byBinLocation.has(bin)) {
+            byBinLocation.set(bin, []);
+          }
+          byBinLocation.get(bin).push(v);
+        });
+      }
+    });
+    
+    // Sort bin locations
+    const sortedBins = Array.from(byBinLocation.keys()).sort();
+    
+    // Pagination for bin locations
+    const binsPerPage = itemsPerPage;
+    const totalPagesBins = Math.max(1, Math.ceil(sortedBins.length / binsPerPage));
+    const startIdx = (currentPage - 1) * binsPerPage;
+    const endIdx = startIdx + binsPerPage;
+    const paginatedBins = sortedBins.slice(startIdx, endIdx);
+    
+    return (
+      <div className="mt-6 bg-white rounded-sm border border-[#EDEBE9] shadow-sm">
+        <button
+          onClick={() => setOutputCollapsed(!outputCollapsed)}
+          className="w-full flex items-center justify-between p-4 border-b border-[#EDEBE9] hover:bg-[#F3F2F1] transition-colors"
+        >
+          <h3 className="text-base font-semibold text-gray-800">Items with Variance (Grouped by Bin Location)</h3>
+          <span className="text-gray-600 text-sm">
+            {outputCollapsed ? '▼' : '▲'}
+          </span>
+        </button>
+        {!outputCollapsed && (
+          <div className="p-6">
+            <div className="flex items-center justify-between mb-4">
+              <div></div>
+              {sortedBins.length > binsPerPage && (
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setCurrentPage(Math.max(1, currentPage - 1))}
+                    disabled={currentPage === 1}
+                    className="px-3 py-1.5 border border-[#C8C6C4] bg-white text-gray-700 rounded-sm hover:bg-[#F3F2F1] disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium transition-colors"
+                  >
+                    Previous
+                  </button>
+                  <span className="text-sm text-gray-600">
+                    Page {currentPage} of {totalPagesBins}
+                  </span>
+                  <button
+                    onClick={() => setCurrentPage(Math.min(totalPagesBins, currentPage + 1))}
+                    disabled={currentPage === totalPagesBins}
+                    className="px-3 py-1.5 border border-[#C8C6C4] bg-white text-gray-700 rounded-sm hover:bg-[#F3F2F1] disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium transition-colors"
+                  >
+                    Next
+                  </button>
+                  <select
+                    value={itemsPerPage}
+                    onChange={(e) => {
+                      setItemsPerPage(Number(e.target.value));
+                      setCurrentPage(1);
+                    }}
+                    className="px-2 py-1.5 border border-[#C8C6C4] bg-white text-gray-800 rounded-sm focus:outline-none focus:ring-2 focus:ring-[#0078D4] focus:border-[#0078D4] text-sm"
+                  >
+                    <option value={5}>5 per page</option>
+                    <option value={10}>10 per page</option>
+                    <option value={20}>20 per page</option>
+                    <option value={50}>50 per page</option>
+                  </select>
+                </div>
+              )}
             </div>
-          )}
+            
+            {/* Items grouped by bin location */}
+            {paginatedBins.map((bin, binIdx) => {
+              const itemsInBin = byBinLocation.get(bin);
+              const binVariance = itemsInBin.reduce((sum, v) => sum + v.variance, 0);
+              const binVarianceValue = itemsInBin.reduce((sum, v) => sum + (v.varianceValue || 0), 0);
+              
+              return (
+                <div key={binIdx} className="mb-6 bg-[#F3F2F1] rounded-sm border border-[#EDEBE9]">
+                  <div className="bg-white px-4 py-3 border-b border-[#EDEBE9]">
+                    <h4 className="font-semibold text-[#0078D4]">Bin Location: {bin}</h4>
+                    <div className="text-xs text-gray-600 mt-1">
+                      {itemsInBin.length} item(s) | 
+                      Variance: <span className={binVariance < 0 ? 'text-[#D13438]' : 'text-[#107C10]'}>
+                        {binVariance > 0 ? '+' : ''}{binVariance.toLocaleString()}
+                      </span>
+                      {' | '}
+                      Value: <span className={binVarianceValue < 0 ? 'text-[#D13438]' : 'text-[#107C10]'}>
+                        R {binVarianceValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="overflow-auto border-t border-[#EDEBE9] bg-white">
+                    <table className="min-w-full text-sm">
+                      <thead className="bg-[#0078D4] text-white">
+                        <tr>
+                          <th className="p-2 text-left font-medium">Item Code</th>
+                          <th className="p-2 text-left font-medium">Item Name</th>
+                          <th className="p-2 text-right font-medium">Book</th>
+                          <th className="p-2 text-right font-medium">Counted</th>
+                          <th className="p-2 text-right font-medium">Variance</th>
+                          <th className="p-2 text-right font-medium">Unit Price</th>
+                          <th className="p-2 text-right font-medium">Variance Value</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {itemsInBin.map((v, idx) => (
+                          <tr 
+                            key={`${bin}-${idx}`}
+                            className={`border-b border-[#EDEBE9] hover:bg-[#F3F2F1] ${v.variance < 0 ? 'bg-[#FDF6F6]' : 'bg-[#F6FDF6]'}`}
+                          >
+                            <td className="p-2 text-gray-800">{v.itemCode}</td>
+                            <td className="p-2 text-gray-800">{v.itemName || '-'}</td>
+                            <td className="p-2 text-right text-gray-800">{v.book.toLocaleString()}</td>
+                            <td className="p-2 text-right text-gray-800">{v.counted.toLocaleString()}</td>
+                            <td className={`p-2 text-right font-semibold ${v.variance < 0 ? 'text-[#D13438]' : 'text-[#107C10]'}`}>
+                              {v.variance > 0 ? '+' : ''}{v.variance.toLocaleString()}
+                            </td>
+                            <td className="p-2 text-right text-gray-800">R {(v.unitPrice || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                            <td className={`p-2 text-right font-semibold ${v.varianceValue < 0 ? 'text-[#D13438]' : 'text-[#107C10]'}`}>
+                              {v.varianceValue > 0 ? '+' : ''}R {(v.varianceValue || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              );
+            })}
+            
+            {/* Pagination info */}
+            {sortedBins.length > binsPerPage && (
+              <div className="mt-4 text-center text-sm text-gray-600 bg-[#F3F2F1] px-3 py-2 rounded-sm">
+                Showing {startIdx + 1}-{Math.min(endIdx, sortedBins.length)} of {sortedBins.length} bin locations
+              </div>
+            )}
+            
+            {/* Items without bin location */}
+            {noBinLocation.length > 0 && (
+              <div className="mb-6 bg-[#F3F2F1] rounded-sm border border-[#EDEBE9]">
+                <div className="bg-white px-4 py-3 border-b border-[#EDEBE9]">
+                  <h4 className="font-semibold text-gray-800">No Bin Location</h4>
+                  <div className="text-xs text-gray-600 mt-1">
+                    {noBinLocation.length} item(s)
+                  </div>
+                </div>
+                <div className="overflow-auto border-t border-[#EDEBE9] bg-white">
+                  <table className="min-w-full text-sm">
+                    <thead className="bg-[#0078D4] text-white">
+                      <tr>
+                        <th className="p-2 text-left font-medium">Item Code</th>
+                        <th className="p-2 text-left font-medium">Item Name</th>
+                        <th className="p-2 text-right font-medium">Book</th>
+                        <th className="p-2 text-right font-medium">Counted</th>
+                        <th className="p-2 text-right font-medium">Variance</th>
+                        <th className="p-2 text-right font-medium">Unit Price</th>
+                        <th className="p-2 text-right font-medium">Variance Value</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {noBinLocation.map((v, idx) => (
+                        <tr 
+                          key={`no-bin-${idx}`}
+                          className={`border-b border-[#EDEBE9] hover:bg-[#F3F2F1] ${v.variance < 0 ? 'bg-[#FDF6F6]' : 'bg-[#F6FDF6]'}`}
+                        >
+                          <td className="p-2 text-gray-800">{v.itemCode}</td>
+                          <td className="p-2 text-gray-800">{v.itemName || '-'}</td>
+                          <td className="p-2 text-right text-gray-800">{v.book.toLocaleString()}</td>
+                          <td className="p-2 text-right text-gray-800">{v.counted.toLocaleString()}</td>
+                          <td className={`p-2 text-right font-semibold ${v.variance < 0 ? 'text-[#D13438]' : 'text-[#107C10]'}`}>
+                            {v.variance > 0 ? '+' : ''}{v.variance.toLocaleString()}
+                          </td>
+                          <td className="p-2 text-right text-gray-800">R {(v.unitPrice || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                          <td className={`p-2 text-right font-semibold ${v.varianceValue < 0 ? 'text-[#D13438]' : 'text-[#107C10]'}`}>
+                            {v.varianceValue > 0 ? '+' : ''}R {(v.varianceValue || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+            
+            {/* Grand Total */}
+            {variancesWithVariance.length > 0 && (
+              <div className="mt-4 p-4 bg-white border border-[#EDEBE9] rounded-sm">
+                <div className="text-sm">
+                  <span className="font-semibold text-gray-800">Grand Total:</span>{' '}
+                  <span className="text-gray-600">
+                    {variancesWithVariance.length} item(s) | 
+                    Variance: <span className={variancesWithVariance.reduce((s,v) => s + v.variance, 0) < 0 ? 'text-[#D13438]' : 'text-[#107C10]'}>
+                      {variancesWithVariance.reduce((s,v) => s + v.variance, 0).toLocaleString()}
+                    </span>
+                    {' | '}
+                    Value: <span className={variancesWithVariance.reduce((s,v) => s + (v.varianceValue || 0), 0) < 0 ? 'text-[#D13438]' : 'text-[#107C10]'}>
+                      R {variancesWithVariance.reduce((s,v) => s + (v.varianceValue || 0), 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </span>
+                  </span>
+                </div>
+              </div>
+            )}
+            
+            {variancesWithVariance.length === 0 && (
+              <div className="p-4 text-center text-gray-600 border border-[#EDEBE9] bg-[#F3F2F1] rounded-sm">No items with variance found.</div>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="grid gap-6">
+      <div>
+        <h2 className="text-2xl font-semibold text-gray-800 mb-1">Reconcile (Journal vs Stock Counts)</h2>
+        <p className="text-sm text-gray-600">Compare and reconcile stock counts with journal entries</p>
+      </div>
+      
+      <div className="bg-white rounded-sm border border-[#EDEBE9] shadow-sm p-6 grid gap-4 sm:max-w-4xl">
+        <div className="border-b border-[#EDEBE9] pb-4 mb-4">
+          <h3 className="text-base font-semibold text-gray-800 mb-4">Upload Files</h3>
         </div>
-        <div className="grid gap-2">
-          <h3 className="font-medium">Upload/paste Journal (Book)</h3>
-          {!!rowsParsedJournal && (
-            <div className="text-sm text-gray-600 dark:text-gray-400">Journal rows: {rowsParsedJournal}</div>
-          )}
-          <input type="file" accept=".csv,text/csv" onChange={handleJournalFile} />
-          <textarea className="min-h-[120px] px-3 py-2 rounded border border-gray-300 dark:border-gray-700" value={journalCsv} onChange={e=>setJournalCsv(e.target.value)} placeholder={`Paste Journal CSV/Excel export here. Expected headers include Item Code and Book/On Hand.`} />
+        
+        <div className="grid gap-3">
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-semibold text-gray-800">Upload/paste Journal (Book)</h3>
+            {!!rowsParsedJournal && (
+              <div className="text-xs text-gray-600 bg-[#F3F2F1] px-2 py-1 rounded-sm">Journal rows: {rowsParsedJournal}</div>
+            )}
+          </div>
+          <input 
+            type="file" 
+            accept=".csv,text/csv" 
+            onChange={handleJournalFile}
+            className="px-3 py-2 border border-[#C8C6C4] bg-white text-gray-800 rounded-sm focus:outline-none focus:ring-2 focus:ring-[#0078D4] focus:border-[#0078D4] file:mr-4 file:py-1.5 file:px-4 file:rounded-sm file:border-0 file:text-sm file:font-medium file:bg-[#0078D4] file:text-white hover:file:bg-[#106EBE] cursor-pointer"
+          />
+          <textarea 
+            className="min-h-[120px] px-3 py-2 border border-[#C8C6C4] bg-white text-gray-800 rounded-sm focus:outline-none focus:ring-2 focus:ring-[#0078D4] focus:border-[#0078D4] resize-none" 
+            value={journalCsv} 
+            onChange={e=>setJournalCsv(e.target.value)} 
+            placeholder="Paste Journal CSV/Excel export here. Expected headers include Item Code and Book/On Hand."
+          />
         </div>
-        <div className="grid gap-2">
-          <h3 className="font-medium">Upload/paste SharePoint Counts (Source of truth)</h3>
-          <div className="flex items-center gap-2">
-            <button onClick={fetchSharePointCounts} disabled={loadingSharePoint} className="px-2 py-1 rounded border border-gray-300 dark:border-gray-600 text-xs">
-              {loadingSharePoint ? 'Fetching…' : 'Fetch from SharePoint'}
-            </button>
-            <span className="text-xs text-gray-600 dark:text-gray-400">(uses backend placeholder; auth needed later)</span>
+        
+        <div className="grid gap-3">
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-semibold text-gray-800">Stock Count Data (Counted)</h3>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleRefreshExcel}
+                disabled={refreshingExcel}
+                className="px-3 py-1.5 bg-[#0078D4] text-white rounded-sm hover:bg-[#106EBE] active:bg-[#005A9E] disabled:opacity-50 disabled:cursor-not-allowed text-xs font-medium transition-colors"
+              >
+                {refreshingExcel ? 'Refreshing...' : 'Refresh Excel'}
+              </button>
+              {refreshingExcel && refreshProgress && (
+                <div className="flex items-center gap-2 text-xs text-gray-600">
+                  <div className="animate-spin rounded-full h-3 w-3 border-b-2 border-[#0078D4]"></div>
+                  <span>{refreshProgress}</span>
+                </div>
+              )}
+            </div>
           </div>
           {!!rowsParsedCounts && (
-            <div className="text-sm text-gray-600 dark:text-gray-400">SharePoint rows: {rowsParsedCounts}</div>
+            <div className="text-xs text-gray-600 bg-[#F3F2F1] px-2 py-1 rounded-sm">Count rows: {rowsParsedCounts}</div>
           )}
-          <input type="file" accept=".csv,text/csv" onChange={handleCountsFile} />
-          <textarea className="min-h-[160px] px-3 py-2 rounded border border-gray-300 dark:border-gray-700" value={countsCsv} onChange={e=>setCountsCsv(e.target.value)} placeholder={`Paste SharePoint list export here. Headers like Barcode and Quantity/Count.`} />
+          <div className="text-xs text-gray-500 mb-1">
+            {countsCsv ? 'Using synced Excel data. You can also upload a file to override.' : 'No synced data available. Refresh Excel or upload a file.'}
+          </div>
+          <input 
+            type="file" 
+            accept=".csv,text/csv" 
+            onChange={handleCountsFile}
+            className="px-3 py-2 border border-[#C8C6C4] bg-white text-gray-800 rounded-sm focus:outline-none focus:ring-2 focus:ring-[#0078D4] focus:border-[#0078D4] file:mr-4 file:py-1.5 file:px-4 file:rounded-sm file:border-0 file:text-sm file:font-medium file:bg-[#0078D4] file:text-white hover:file:bg-[#106EBE] cursor-pointer"
+          />
+          <textarea 
+            className="min-h-[160px] px-3 py-2 border border-[#C8C6C4] bg-white text-gray-800 rounded-sm focus:outline-none focus:ring-2 focus:ring-[#0078D4] focus:border-[#0078D4] resize-none" 
+            value={countsCsv} 
+            onChange={e=>setCountsCsv(e.target.value)} 
+            placeholder="Stock count data from Excel (synced automatically) or paste CSV data here. Headers like Item Code and Counted/Quantity."
+          />
         </div>
-        <div className="flex gap-2">
-          <button onClick={preview} className="px-3 py-2 rounded border border-gray-300 dark:border-gray-600 text-sm">Preview variances</button>
-          <button onClick={apply} className="px-3 py-2 rounded bg-blue-600 text-white text-sm">Apply adjustments</button>
+        
+        <div className="flex gap-3 pt-2">
+          <button onClick={preview} className="px-4 py-2 border border-[#C8C6C4] bg-white text-gray-700 rounded-sm hover:bg-[#F3F2F1] font-medium transition-colors text-sm">Preview variances</button>
+          <button onClick={apply} className="px-4 py-2 bg-[#0078D4] text-white rounded-sm hover:bg-[#106EBE] active:bg-[#005A9E] font-medium transition-colors text-sm">Apply adjustments</button>
         </div>
       </div>
 
       {/* Summary Variance Report */}
       {variances.length > 0 && (
-        <div className="grid gap-4">
-          {/* Variance Amount Report */}
-          <div className="overflow-auto border border-gray-200 dark:border-gray-800 rounded">
-            <h3 className="p-2 bg-blue-600 text-white font-semibold">Variance Amount Report</h3>
-            <table className="min-w-full text-sm">
-              <thead className="bg-blue-600 text-white">
-                <tr>
-                  <th className="p-2 text-left">Description</th>
-                  <th className="p-2 text-right">Amount</th>
-                  <th className="p-2 text-right">Total Stock Value</th>
-                  <th className="p-2 text-right">Nett Variance</th>
-                  <th className="p-2 text-right">Absolute Variance</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr className="border-t border-gray-200 dark:border-gray-800">
-                  <td className="p-2">Negative Variance</td>
-                  <td className="p-2 text-right font-semibold text-red-600">{varianceSummary.negativeVariance.toFixed(2)}</td>
-                  <td className="p-2 text-right" rowSpan={6}>{varianceSummary.totalStockValue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
-                  <td className="p-2 text-right">-</td>
-                  <td className="p-2 text-right">-</td>
-                </tr>
-                <tr className="border-t border-gray-200 dark:border-gray-800">
-                  <td className="p-2">Positive Variance</td>
-                  <td className="p-2 text-right font-semibold text-green-600">{varianceSummary.positiveVariance.toFixed(2)}</td>
-                  <td className="p-2 text-right">{varianceSummary.nettVariance.toFixed(2)}</td>
-                  <td className="p-2 text-right">{varianceSummary.absoluteVariance.toFixed(2)}</td>
-                </tr>
-                <tr className="border-t border-gray-200 dark:border-gray-800">
-                  <td className="p-2">Percentage Variance</td>
-                  <td className="p-2 text-right">{varianceSummary.percentageVariance.toFixed(2)}%</td>
-                  <td className="p-2 text-right">-</td>
-                  <td className="p-2 text-right">-</td>
-                </tr>
-                <tr className="border-t border-gray-200 dark:border-gray-800">
-                  <td className="p-2">Percentage Absolute Variance</td>
-                  <td className="p-2 text-right">{varianceSummary.percentageAbsoluteVariance.toFixed(2)}%</td>
-                  <td className="p-2 text-right">-</td>
-                  <td className="p-2 text-right">-</td>
-                </tr>
-                <tr className="border-t border-gray-200 dark:border-gray-800">
-                  <td className="p-2">Line Variance</td>
-                  <td className="p-2 text-right">{varianceSummary.lineVariance}</td>
-                  <td className="p-2 text-right">-</td>
-                  <td className="p-2 text-right">-</td>
-                </tr>
-                <tr className="border-t border-gray-200 dark:border-gray-800">
-                  <td className="p-2">Line Percentage Variance</td>
-                  <td className="p-2 text-right">{varianceSummary.linePercentageVariance.toFixed(2)}%</td>
-                  <td className="p-2 text-right">-</td>
-                  <td className="p-2 text-right">-</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
+        <div className="bg-white rounded-sm border border-[#EDEBE9] shadow-sm">
+          <button
+            onClick={() => setSummaryCollapsed(!summaryCollapsed)}
+            className="w-full flex items-center justify-between p-4 border-b border-[#EDEBE9] hover:bg-[#F3F2F1] transition-colors"
+          >
+            <h3 className="text-base font-semibold text-gray-800">Variance Summary Reports</h3>
+            <span className="text-gray-600 text-sm">
+              {summaryCollapsed ? '▼' : '▲'}
+            </span>
+          </button>
+          {!summaryCollapsed && (
+            <div className="p-6 grid gap-4">
+              {/* Variance Amount Report */}
+              <div className="overflow-auto border border-[#EDEBE9] rounded-sm">
+                <h3 className="p-3 bg-[#0078D4] text-white font-semibold">Variance Amount Report</h3>
+                <table className="min-w-full text-sm">
+                  <thead className="bg-[#0078D4] text-white">
+                    <tr>
+                      <th className="p-2 text-left font-medium">Description</th>
+                      <th className="p-2 text-right font-medium">Amount</th>
+                      <th className="p-2 text-right font-medium">Total Stock Value</th>
+                      <th className="p-2 text-right font-medium">Nett Variance</th>
+                      <th className="p-2 text-right font-medium">Absolute Variance</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr className="border-t border-[#EDEBE9]">
+                      <td className="p-2 text-gray-800">Negative Variance</td>
+                      <td className="p-2 text-right font-semibold text-[#D13438]">{varianceSummary.negativeVariance.toFixed(2)}</td>
+                      <td className="p-2 text-right text-gray-800" rowSpan={6}>{varianceSummary.totalStockValue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                      <td className="p-2 text-right text-gray-800">-</td>
+                      <td className="p-2 text-right text-gray-800">-</td>
+                    </tr>
+                    <tr className="border-t border-[#EDEBE9]">
+                      <td className="p-2 text-gray-800">Positive Variance</td>
+                      <td className="p-2 text-right font-semibold text-[#107C10]">{varianceSummary.positiveVariance.toFixed(2)}</td>
+                      <td className="p-2 text-right text-gray-800">{varianceSummary.nettVariance.toFixed(2)}</td>
+                      <td className="p-2 text-right text-gray-800">{varianceSummary.absoluteVariance.toFixed(2)}</td>
+                    </tr>
+                    <tr className="border-t border-[#EDEBE9]">
+                      <td className="p-2 text-gray-800">Percentage Variance</td>
+                      <td className="p-2 text-right text-gray-800">{varianceSummary.percentageVariance.toFixed(2)}%</td>
+                      <td className="p-2 text-right text-gray-800">-</td>
+                      <td className="p-2 text-right text-gray-800">-</td>
+                    </tr>
+                    <tr className="border-t border-[#EDEBE9]">
+                      <td className="p-2 text-gray-800">Percentage Absolute Variance</td>
+                      <td className="p-2 text-right text-gray-800">{varianceSummary.percentageAbsoluteVariance.toFixed(2)}%</td>
+                      <td className="p-2 text-right text-gray-800">-</td>
+                      <td className="p-2 text-right text-gray-800">-</td>
+                    </tr>
+                    <tr className="border-t border-[#EDEBE9]">
+                      <td className="p-2 text-gray-800">Line Variance</td>
+                      <td className="p-2 text-right text-gray-800">{varianceSummary.lineVariance}</td>
+                      <td className="p-2 text-right text-gray-800">-</td>
+                      <td className="p-2 text-right text-gray-800">-</td>
+                    </tr>
+                    <tr className="border-t border-[#EDEBE9]">
+                      <td className="p-2 text-gray-800">Line Percentage Variance</td>
+                      <td className="p-2 text-right text-gray-800">{varianceSummary.linePercentageVariance.toFixed(2)}%</td>
+                      <td className="p-2 text-right text-gray-800">-</td>
+                      <td className="p-2 text-right text-gray-800">-</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
 
-          {/* Variance Value Report */}
-          <div className="overflow-auto border border-gray-200 dark:border-gray-800 rounded">
-            <h3 className="p-2 bg-green-600 text-white font-semibold">Variance Value Report</h3>
-            <table className="min-w-full text-sm">
-              <thead className="bg-green-600 text-white">
-                <tr>
-                  <th className="p-2 text-left">Description</th>
-                  <th className="p-2 text-right">Amount</th>
-                  <th className="p-2 text-right">Total Stock Value</th>
-                  <th className="p-2 text-right">Nett Variance</th>
-                  <th className="p-2 text-right">Absolute Variance</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr className="border-t border-gray-200 dark:border-gray-800">
-                  <td className="p-2">Negative Variance</td>
-                  <td className="p-2 text-right font-semibold text-red-600">{varianceSummary.negativeVarianceValue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
-                  <td className="p-2 text-right" rowSpan={6}>{varianceSummary.totalStockValue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
-                  <td className="p-2 text-right">-</td>
-                  <td className="p-2 text-right">-</td>
-                </tr>
-                <tr className="border-t border-gray-200 dark:border-gray-800">
-                  <td className="p-2">Positive Variance</td>
-                  <td className="p-2 text-right font-semibold text-green-600">{varianceSummary.positiveVarianceValue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
-                  <td className="p-2 text-right">{varianceSummary.nettVarianceValue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
-                  <td className="p-2 text-right">{varianceSummary.absoluteVarianceValue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
-                </tr>
-                <tr className="border-t border-gray-200 dark:border-gray-800">
-                  <td className="p-2">Percentage Variance</td>
-                  <td className="p-2 text-right">{varianceSummary.percentageVariance.toFixed(2)}%</td>
-                  <td className="p-2 text-right">-</td>
-                  <td className="p-2 text-right">-</td>
-                </tr>
-                <tr className="border-t border-gray-200 dark:border-gray-800">
-                  <td className="p-2">Percentage Absolute Variance</td>
-                  <td className="p-2 text-right">{varianceSummary.percentageAbsoluteVariance.toFixed(2)}%</td>
-                  <td className="p-2 text-right">-</td>
-                  <td className="p-2 text-right">-</td>
-                </tr>
-                <tr className="border-t border-gray-200 dark:border-gray-800">
-                  <td className="p-2">Line Variance</td>
-                  <td className="p-2 text-right">{varianceSummary.lineVariance}</td>
-                  <td className="p-2 text-right">-</td>
-                  <td className="p-2 text-right">-</td>
-                </tr>
-                <tr className="border-t border-gray-200 dark:border-gray-800">
-                  <td className="p-2">Line Percentage Variance</td>
-                  <td className="p-2 text-right">{varianceSummary.linePercentageVariance.toFixed(2)}%</td>
-                  <td className="p-2 text-right">-</td>
-                  <td className="p-2 text-right">-</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
+              {/* Variance Value Report */}
+              <div className="overflow-auto border border-[#EDEBE9] rounded-sm">
+                <h3 className="p-3 bg-[#107C10] text-white font-semibold">Variance Value Report</h3>
+                <table className="min-w-full text-sm">
+                  <thead className="bg-[#107C10] text-white">
+                    <tr>
+                      <th className="p-2 text-left font-medium">Description</th>
+                      <th className="p-2 text-right font-medium">Amount</th>
+                      <th className="p-2 text-right font-medium">Total Stock Value</th>
+                      <th className="p-2 text-right font-medium">Nett Variance</th>
+                      <th className="p-2 text-right font-medium">Absolute Variance</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr className="border-t border-[#EDEBE9]">
+                      <td className="p-2 text-gray-800">Negative Variance</td>
+                      <td className="p-2 text-right font-semibold text-[#D13438]">R {varianceSummary.negativeVarianceValue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                      <td className="p-2 text-right text-gray-800" rowSpan={6}>R {varianceSummary.totalStockValue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                      <td className="p-2 text-right text-gray-800">-</td>
+                      <td className="p-2 text-right text-gray-800">-</td>
+                    </tr>
+                    <tr className="border-t border-[#EDEBE9]">
+                      <td className="p-2 text-gray-800">Positive Variance</td>
+                      <td className="p-2 text-right font-semibold text-[#107C10]">R {varianceSummary.positiveVarianceValue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                      <td className="p-2 text-right text-gray-800">R {varianceSummary.nettVarianceValue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                      <td className="p-2 text-right text-gray-800">R {varianceSummary.absoluteVarianceValue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                    </tr>
+                    <tr className="border-t border-[#EDEBE9]">
+                      <td className="p-2 text-gray-800">Percentage Variance</td>
+                      <td className="p-2 text-right text-gray-800">{varianceSummary.percentageVariance.toFixed(2)}%</td>
+                      <td className="p-2 text-right text-gray-800">-</td>
+                      <td className="p-2 text-right text-gray-800">-</td>
+                    </tr>
+                    <tr className="border-t border-[#EDEBE9]">
+                      <td className="p-2 text-gray-800">Percentage Absolute Variance</td>
+                      <td className="p-2 text-right text-gray-800">{varianceSummary.percentageAbsoluteVariance.toFixed(2)}%</td>
+                      <td className="p-2 text-right text-gray-800">-</td>
+                      <td className="p-2 text-right text-gray-800">-</td>
+                    </tr>
+                    <tr className="border-t border-[#EDEBE9]">
+                      <td className="p-2 text-gray-800">Line Variance</td>
+                      <td className="p-2 text-right text-gray-800">{varianceSummary.lineVariance}</td>
+                      <td className="p-2 text-right text-gray-800">-</td>
+                      <td className="p-2 text-right text-gray-800">-</td>
+                    </tr>
+                    <tr className="border-t border-[#EDEBE9]">
+                      <td className="p-2 text-gray-800">Line Percentage Variance</td>
+                      <td className="p-2 text-right text-gray-800">{varianceSummary.linePercentageVariance.toFixed(2)}%</td>
+                      <td className="p-2 text-right text-gray-800">-</td>
+                      <td className="p-2 text-right text-gray-800">-</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-4">
-          <label className="flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={showOnlyVariance}
-              onChange={(e) => {
-                setShowOnlyVariance(e.target.checked);
-                setPage(1);
-              }}
-              className="w-4 h-4 rounded border-gray-300 dark:border-gray-600"
-            />
-            <span className="text-gray-600 dark:text-gray-400">Show only items with variance</span>
-          </label>
-          <div className="text-sm text-gray-600 dark:text-gray-400">
-            Showing {filteredVariances.length ? ((page - 1) * pageSize + 1) : 0}–{Math.min(page * pageSize, filteredVariances.length)} of {filteredVariances.length}
-            {showOnlyVariance && ` (${variances.length} total)`}
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
-          <button className="px-2 py-1 rounded border border-gray-300 dark:border-gray-600" disabled={page<=1} onClick={()=>setPage(p=>Math.max(1,p-1))}>Prev</button>
-          <span className="text-sm">Page {page} / {totalPages}</span>
-          <button className="px-2 py-1 rounded border border-gray-300 dark:border-gray-600" disabled={page>=totalPages} onClick={()=>setPage(p=>Math.min(totalPages,p+1))}>Next</button>
-          <select className="px-2 py-1 rounded border border-gray-300 dark:border-gray-600" value={pageSize} onChange={e=>{ setPageSize(Number(e.target.value)); setPage(1); }}>
-            <option value={25}>25</option>
-            <option value={50}>50</option>
-            <option value={100}>100</option>
-            <option value={250}>250</option>
-          </select>
-        </div>
-      </div>
-
-      <div className="overflow-auto border border-gray-200 dark:border-gray-800 rounded">
-        <table className="min-w-full text-sm">
-          <thead className="bg-gray-50 dark:bg-gray-800">
-            <tr>
-              <th className="p-2 text-left">Code</th>
-              <th className="p-2 text-left">Name</th>
-              <th className="p-2 text-right">Book</th>
-              <th className="p-2 text-right">Counted</th>
-              <th className="p-2 text-right">Unit Price</th>
-              <th className="p-2 text-right">Variance Amount</th>
-              <th className="p-2 text-right">Variance Value</th>
-            </tr>
-          </thead>
-          <tbody>
-            {pageData.map(v => (
-              <tr key={v.itemCode} className="border-t border-gray-200 dark:border-gray-800">
-                <td className="p-2 font-mono">{v.itemCode}</td>
-                <td className="p-2">{v.itemName || '-'}</td>
-                <td className="p-2 text-right">{v.book}</td>
-                <td className="p-2 text-right">{v.counted}</td>
-                <td className="p-2 text-right">{(v.unitPrice || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
-                <td className={`p-2 text-right ${v.variance===0?'':'font-semibold'} ${v.variance>0?'text-green-600':'text-red-600'}`}>{v.variance}</td>
-                <td className={`p-2 text-right ${v.variance===0?'':'font-semibold'} ${v.variance>0?'text-green-600':'text-red-600'}`}>
-                  {(v.varianceValue || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                </td>
-              </tr>
-            ))}
-            {filteredVariances.length === 0 && (
-              <tr><td className="p-3 text-center text-gray-500 dark:text-gray-400" colSpan={7}>
-                {showOnlyVariance ? 'No items with variance found' : 'No data'}
-              </td></tr>
-            )}
-          </tbody>
-          <tfoot>
-            <tr className="border-t border-gray-200 dark:border-gray-800">
-              <td className="p-2" colSpan={5}>Total variance</td>
-              <td className={`p-2 text-right ${totalDelta===0?'':'font-semibold'} ${totalDelta>0?'text-green-600':'text-red-600'}`}>{totalDelta}</td>
-              <td className={`p-2 text-right ${varianceSummary.nettVarianceValue===0?'':'font-semibold'} ${varianceSummary.nettVarianceValue>0?'text-green-600':'text-red-600'}`}>
-                {varianceSummary.nettVarianceValue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-              </td>
-            </tr>
-          </tfoot>
-        </table>
-      </div>
+      {/* Items with Variance (Grouped by Bin Location) */}
+      {variances.length > 0 && renderVarianceOutput()}
     </div>
   );
 }

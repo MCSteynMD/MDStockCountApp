@@ -52,11 +52,7 @@ const router = createBrowserRouter([
       },
       { 
         path: 'summary', 
-        element: (
-          <ProtectedRoute>
-            <Summary />
-          </ProtectedRoute>
-        ) 
+        element: <Summary />
       },
       // Redirect any unknown routes to Home
       { path: '*', element: <Navigate to="/" replace /> },

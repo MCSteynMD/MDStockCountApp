@@ -14,6 +14,8 @@ export default function Home() {
   const [parsedOptions, setParsedOptions] = useState([]);
   const [fileUploaded, setFileUploaded] = useState(false);
   const [uploadedFileContent, setUploadedFileContent] = useState('');
+  const [refreshingExcel, setRefreshingExcel] = useState(false);
+  const [refreshProgress, setRefreshProgress] = useState('');
 
   // Mark that user has visited Home page
   useEffect(() => {
@@ -222,51 +224,145 @@ export default function Home() {
     return dateStr;
   }
 
-  async function handleStockCountFile(e) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    
+  async function processCsvContent(csvText) {
     try {
-      const text = await file.text();
-      
       // Store the file content for later use
-      setUploadedFileContent(text);
+      setUploadedFileContent(csvText);
       
       setStatus('Parsing stock count file...');
       
-      const response = await api.post('/api/companies/parse-stock-take-codes', { csvText: text });
+      const response = await api.post('/api/companies/parse-stock-take-codes', { csvText });
       const options = response.data.options || [];
       
       if (options.length === 0) {
         setStatus('No valid stock take codes found in file');
+        setParsedOptions([]);
+        setFileUploaded(false);
         return;
       }
       
-      setParsedOptions(options);
-      setFileUploaded(true);
-      
-      // Extract unique dates and set first one if available
+      // Extract unique dates from ALL options before filtering
       const uniqueDates = [...new Set(options.map(opt => opt.date))]
         .filter(date => date && date.length === 8)
         .sort()
         .reverse();
+      
+      // Check if current selectedDate exists in new data
+      const currentDate = selectedDate;
+      const dateExistsInNewData = currentDate && uniqueDates.includes(currentDate);
+      
+      // Set dates first
       setDates(uniqueDates);
       
-      // Load stored date if available
-      try {
-        const storedDate = sessionStorage.getItem('selectedDate');
-        if (storedDate && uniqueDates.includes(storedDate)) {
-          setSelectedDate(storedDate);
-        } else if (uniqueDates.length > 0) {
-          setSelectedDate(uniqueDates[0]); // Auto-select most recent date
+      // Update selectedDate: keep current if it exists in new data, otherwise use most recent
+      let newSelectedDate = selectedDate;
+      if (dateExistsInNewData) {
+        // Keep current date - don't change it
+        // This preserves user's selection if it's still valid
+        newSelectedDate = selectedDate;
+      } else if (uniqueDates.length > 0) {
+        // Current date not in new data, reset to most recent
+        newSelectedDate = uniqueDates[0];
+        setSelectedDate(uniqueDates[0]);
+      } else {
+        // No dates available, clear selection
+        newSelectedDate = '';
+        setSelectedDate('');
+      }
+      
+      // Now set parsed options - this will trigger useEffect to update dropdowns
+      setParsedOptions(options);
+      setFileUploaded(true);
+      
+      // Reset company/warehouse if they're no longer valid after refresh
+      // This will be handled by the useEffect, but we can also clear them here if needed
+      if (newSelectedDate && selectedCompany) {
+        // Check if current company/warehouse combo is still valid
+        const filteredByDate = newSelectedDate 
+          ? options.filter(opt => opt.date === newSelectedDate)
+          : options;
+        const companyStillValid = filteredByDate.some(opt => 
+          (opt.companyCode || opt.companyName) === selectedCompany
+        );
+        if (!companyStillValid) {
+          setSelectedCompany('');
+          setSelectedWarehouse('');
         }
-      } catch {}
+      }
       
       setStatus(`Found ${options.length} unique company/warehouse combinations`);
     } catch (error) {
       console.error('Error parsing stock count file:', error);
       setStatus(`Error: ${error.response?.data?.message || error.message}`);
       setUploadedFileContent(''); // Clear on error
+      setParsedOptions([]);
+      setFileUploaded(false);
+    }
+  }
+
+  async function handleStockCountFile(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    
+    try {
+      const text = await file.text();
+      await processCsvContent(text);
+    } catch (error) {
+      console.error('Error reading file:', error);
+      setStatus(`Error: ${error.message}`);
+    }
+  }
+
+  async function handleRefreshExcel() {
+    setRefreshingExcel(true);
+    setRefreshProgress('Opening Excel...');
+    setStatus('Starting Excel refresh...');
+    
+    // Progress updates during the refresh process
+    const progressSteps = [
+      { delay: 0, message: 'Opening Excel...' },
+      { delay: 2000, message: 'Running macro RefreshAllData...' },
+      { delay: 5000, message: 'Waiting for data refresh to complete...' },
+      { delay: 10000, message: 'Reading data from worksheet...' },
+    ];
+    
+    const progressInterval = setInterval(() => {
+      const elapsed = Date.now() - (window.excelRefreshStartTime || Date.now());
+      window.excelRefreshStartTime = window.excelRefreshStartTime || Date.now();
+      
+      // Update progress based on elapsed time
+      for (let i = progressSteps.length - 1; i >= 0; i--) {
+        if (elapsed >= progressSteps[i].delay) {
+          setRefreshProgress(progressSteps[i].message);
+          break;
+        }
+      }
+    }, 1000);
+    
+    try {
+      window.excelRefreshStartTime = Date.now();
+      const response = await api.post('/api/excel/refresh');
+      
+      clearInterval(progressInterval);
+      
+      if (response.data.success && response.data.csvContent) {
+        setRefreshProgress('Processing data...');
+        setStatus('Excel refreshed successfully! Processing data...');
+        await processCsvContent(response.data.csvContent);
+        setRefreshProgress('');
+        // Status will be updated by processCsvContent
+      } else {
+        setRefreshProgress('');
+        setStatus(`Error: ${response.data.message || 'Unknown error'}`);
+      }
+    } catch (error) {
+      clearInterval(progressInterval);
+      console.error('Error refreshing Excel:', error);
+      setRefreshProgress('');
+      setStatus(`Error: ${error.response?.data?.message || error.message || 'Failed to refresh Excel'}`);
+    } finally {
+      setRefreshingExcel(false);
+      window.excelRefreshStartTime = null;
     }
   }
 
@@ -285,14 +381,35 @@ export default function Home() {
         {/* File upload for stock count */}
         <div className="grid gap-2">
           <label className="text-sm font-medium text-gray-700">
-            Upload Stock Count File <span className="text-gray-500 font-normal">(optional)</span>
+            Stock Count Data <span className="text-gray-500 font-normal">(optional)</span>
           </label>
-          <input
-            type="file"
-            accept=".csv,.txt"
-            onChange={handleStockCountFile}
-            className="px-3 py-2 border border-[#C8C6C4] bg-white text-gray-800 rounded-sm focus:outline-none focus:ring-2 focus:ring-[#0078D4] focus:border-[#0078D4] file:mr-4 file:py-1.5 file:px-4 file:rounded-sm file:border-0 file:text-sm file:font-medium file:bg-[#0078D4] file:text-white hover:file:bg-[#106EBE] cursor-pointer"
-          />
+          <div className="flex gap-2 items-center">
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleRefreshExcel}
+                disabled={refreshingExcel}
+                className="px-4 py-2 bg-[#0078D4] text-white rounded-sm hover:bg-[#106EBE] active:bg-[#005A9E] disabled:opacity-50 disabled:cursor-not-allowed font-medium transition-colors text-sm"
+              >
+                {refreshingExcel ? 'Refreshing...' : 'Refresh Excel'}
+              </button>
+              {refreshingExcel && refreshProgress && (
+                <div className="flex items-center gap-2 text-xs text-gray-600">
+                  <div className="animate-spin rounded-full h-3 w-3 border-b-2 border-[#0078D4]"></div>
+                  <span>{refreshProgress}</span>
+                </div>
+              )}
+            </div>
+            <span className="text-xs text-gray-500">or</span>
+            <label className="px-3 py-2 border border-[#C8C6C4] bg-white text-gray-800 rounded-sm hover:bg-[#F3F2F1] cursor-pointer text-sm font-medium">
+              Upload File
+              <input
+                type="file"
+                accept=".csv,.txt"
+                onChange={handleStockCountFile}
+                className="hidden"
+              />
+            </label>
+          </div>
           {fileUploaded && (
             <div className="text-xs text-[#107C10] bg-[#DFF6DD] px-2 py-1.5 rounded-sm mt-1">
               ✓ File loaded - dropdowns populated from stock take codes

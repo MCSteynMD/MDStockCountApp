@@ -5,6 +5,9 @@ const path = require('path');
 const fs = require('fs');
 const bcrypt = require('bcryptjs');
 const axios = require('axios');
+const { exec } = require('child_process');
+const { promisify } = require('util');
+const execAsync = promisify(exec);
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -758,7 +761,7 @@ function computeVariance(entries, overrideBookMap, providedNameByCode, costPrice
     return defaultVariance(entries, overrideBookMap, providedNameByCode, costPriceByCode);
 }
 
-app.post('/api/reconcile/preview', requireAuth, (req, res) => {
+app.post('/api/reconcile/preview', (req, res) => {
     const { entries = [], bookEntries = [] } = req.body || {};
     const overrideBookMap = new Map();
     const costPriceByCode = new Map();
@@ -999,14 +1002,29 @@ app.post('/api/companies/parse-stock-take-codes', (req, res) => {
     
     // Find Stock Take Code column index
     const headers = splitCSVLine(lines[0]).map(h => h.trim().replace(/^"|"$/g, ''));
-    const stockTakeCodeIndex = headers.findIndex(h => 
-        h.toLowerCase().includes('stock take code') || 
-        h.toLowerCase() === 'stocktakecode' ||
-        h.toLowerCase() === 'stock take code'
-    );
+    
+    // Debug: Log all headers for troubleshooting
+    console.log('[Parse Stock Take Codes] Headers found:', headers);
+    console.log('[Parse Stock Take Codes] Header count:', headers.length);
+    console.log('[Parse Stock Take Codes] Column E (index 4):', headers[4] || '(empty)');
+    
+    const stockTakeCodeIndex = headers.findIndex(h => {
+        const lower = h.toLowerCase();
+        return lower.includes('stock take code') || 
+               lower === 'stocktakecode' ||
+               lower === 'stock take code' ||
+               lower.includes('stocktake') ||
+               lower === 'stocktake';
+    });
+    
+    console.log('[Parse Stock Take Codes] Stock Take Code column found at index:', stockTakeCodeIndex);
     
     if (stockTakeCodeIndex === -1) {
-        return res.status(400).json({ message: 'Stock Take Code column not found' });
+        // Log all headers to help debug
+        console.error('[Parse Stock Take Codes] Available headers:', headers.map((h, i) => `[${i}] "${h}"`).join(', '));
+        return res.status(400).json({ 
+            message: `Stock Take Code column not found. Available columns: ${headers.map((h, i) => `${String.fromCharCode(65 + i)}="${h}"`).join(', ')}` 
+        });
     }
     
     // Extract unique Stock Take Codes
@@ -1102,7 +1120,7 @@ app.post('/api/companies/check', (req, res) => {
     res.json({ valid });
 });
 
-app.post('/api/companies/select', requireAuth, (req, res) => {
+app.post('/api/companies/select', (req, res) => {
     const { companies: companiesInput, company: companyInput, warehouse } = req.body || {};
     // Support both single company (backward compat) and array of companies
     const companiesArray = Array.isArray(companiesInput) 
@@ -1158,14 +1176,24 @@ app.post('/api/companies/select', requireAuth, (req, res) => {
     res.json({ companies: validCodes, warehouse: warehouse || null });
 });
 
-app.get('/api/companies/current', requireAuth, (req, res) => {
-    // Support both arrays and single company (backward compat)
-    const companies = req.session.companies || (req.session.company ? [req.session.company] : []);
-    res.json({ 
-        companies: companies,
-        company: companies.length === 1 ? companies[0] : (companies[0] || null), // backward compat
-        warehouse: req.session.warehouse || null
-    });
+// Current company endpoint - public (no auth required) for Home page compatibility
+app.get('/api/companies/current', (req, res) => {
+    // If user is authenticated, return their session data
+    if (req.session && req.session.userId) {
+        const companies = req.session.companies || (req.session.company ? [req.session.company] : []);
+        res.json({ 
+            companies: companies,
+            company: companies.length === 1 ? companies[0] : (companies[0] || null), // backward compat
+            warehouse: req.session.warehouse || null
+        });
+    } else {
+        // For public/unauthenticated access, return empty (Home page can use this)
+        res.json({ 
+            companies: [],
+            company: null,
+            warehouse: null
+        });
+    }
 });
 
 app.get('/api/companies/geo', requireAuth, (req, res) => {
@@ -1184,6 +1212,714 @@ app.get('/api/companies/geo', requireAuth, (req, res) => {
         if (!best || d < best.d) best = { code: c.code, d };
     });
     res.json({ company: best.code, distanceKm: Math.round(best.d) });
+});
+
+// Excel macro refresh endpoint (no auth required - Home page is public)
+app.post('/api/excel/refresh', async (req, res) => {
+    // Set a longer timeout for this endpoint (10 minutes)
+    req.setTimeout(10 * 60 * 1000);
+    res.setTimeout(10 * 60 * 1000);
+    
+    const startTime = Date.now();
+    console.log('[Excel Refresh] Starting refresh operation at', new Date().toISOString());
+    
+    try {
+        const excelFilePath = path.join(__dirname, '..', 'RefreshExcel.xlsm');
+        const outputCsvPath = path.join(__dirname, '..', 'Stock Count.csv');
+        
+        console.log('[Excel Refresh] Excel file path:', excelFilePath);
+        console.log('[Excel Refresh] Output CSV path:', outputCsvPath);
+        
+        // Check if Excel file exists
+        if (!fs.existsSync(excelFilePath)) {
+            console.error('[Excel Refresh] Excel file not found:', excelFilePath);
+            return res.status(404).json({ 
+                message: 'RefreshExcel.xlsm not found. Please ensure the file exists in the root directory.' 
+            });
+        }
+        
+        console.log('[Excel Refresh] Excel file found, proceeding with macro execution...');
+        
+        // PowerShell script to run Excel macro
+        // Try to find and execute any available macro, or use specified name
+        const requestedMacroName = req.body.macroName; // Can be overridden in request
+        
+        // Create a temporary PowerShell script file to avoid escaping issues
+        const tempScriptPath = path.join(__dirname, '..', 'temp_refresh_excel.ps1');
+        const powershellScript = `$excelPath = "${excelFilePath.replace(/\\/g, '\\\\')}"
+$outputPath = "${outputCsvPath.replace(/\\/g, '\\\\')}"
+$requestedMacro = "${requestedMacroName || ''}"
+
+try {
+    Write-Host "[Step 1/6] Creating Excel COM object..."
+    # Create Excel COM object
+    $excel = New-Object -ComObject Excel.Application
+    $excel.Visible = $false
+    $excel.DisplayAlerts = $false
+    
+    Write-Host "[Step 2/6] Opening workbook: $excelPath"
+    # Open the workbook
+    $workbook = $excel.Workbooks.Open($excelPath)
+    Write-Host "[Step 2/6] Workbook opened successfully"
+    
+    # Note: The macro may include Application.Quit at the end
+    # We'll handle that by checking if Excel is still accessible after macro execution
+    
+    Write-Host "[Step 3/6] Searching for macros..."
+    # Try to get macro names (may fail due to security settings)
+    $foundMacros = @()
+    try {
+        $vbProject = $workbook.VBProject
+        foreach ($component in $vbProject.VBComponents) {
+            $codeModule = $component.CodeModule
+            if ($codeModule.CountOfLines -gt 0) {
+                $content = $codeModule.Lines(1, $codeModule.CountOfLines)
+                # Extract Sub and Function names (case-insensitive)
+                $matches = [regex]::Matches($content, '(?i)(?:Sub|Function)\s+(\w+)\s*\(')
+                foreach ($match in $matches) {
+                    $foundMacros += $match.Groups[1].Value
+                }
+            }
+        }
+        Write-Host "Found macros: $($foundMacros -join ', ')"
+    } catch {
+        Write-Host "Note: Could not enumerate macros (may need 'Trust access to VBA project' enabled). Will try common names."
+    }
+    
+    $macroToRun = $null
+    $lastError = ""
+    
+    # If specific macro requested, try that first
+    if ($requestedMacro -and $requestedMacro.Trim() -ne '') {
+        try {
+            $excel.Run($requestedMacro)
+            Write-Host "Macro '$requestedMacro' executed successfully"
+            $macroToRun = $requestedMacro
+        } catch {
+            $lastError = "Requested macro '$requestedMacro': $($_.Exception.Message)"
+            Write-Host $lastError
+        }
+    }
+    
+    # If no macro found yet, try common names (starting with RefreshAllData which is the known macro name)
+    if (-not $macroToRun) {
+        $commonNames = @('RefreshAllData', 'RefreshData', 'RefreshAll', 'Refresh', 'Main', 'AutoRefresh', 'RefreshExcel', 'RefreshDataConnection', 'RefreshConnections', 'UpdateData')
+        foreach ($name in $commonNames) {
+            try {
+                $excel.Run($name)
+                Write-Host "Macro '$name' executed successfully"
+                $macroToRun = $name
+                break
+            } catch {
+                $lastError = "Macro '$name': $($_.Exception.Message)"
+                continue
+            }
+        }
+    }
+    
+    # If still no macro and we found macros via enumeration, try the first one
+    if (-not $macroToRun -and $foundMacros.Count -gt 0) {
+        $firstMacro = $foundMacros[0]
+        try {
+            $excel.Run($firstMacro)
+            Write-Host "Executed first available macro: $firstMacro"
+            $macroToRun = $firstMacro
+        } catch {
+            $lastError = "Failed to execute '$firstMacro': $($_.Exception.Message)"
+        }
+    }
+    
+    if (-not $macroToRun) {
+        $errorMsg = "No executable macro found. "
+        if ($foundMacros.Count -gt 0) {
+            $errorMsg += "Found macros: $($foundMacros -join ', '). "
+        }
+        $errorMsg += "Tried common names: RefreshAllData, RefreshData, RefreshAll, Refresh, Main, AutoRefresh, RefreshExcel. "
+        $errorMsg += "Last error: $lastError"
+        throw $errorMsg
+    }
+    
+    Write-Host "[Step 4/6] Executing macro: $macroToRun"
+    Write-Host "[Step 4/6] Waiting for data to refresh (this may take several minutes)..."
+    
+    # Give Excel a moment to start processing after macro execution
+    Write-Host "[Step 4/6] Waiting 5 seconds for macro to start processing..."
+    Start-Sleep -Seconds 5
+    
+    $maxWaitTime = 180  # Maximum wait time in seconds (3 minutes - increased from 2)
+    $checkInterval = 5  # Check every 5 seconds (increased from 2 to reduce overhead)
+    $waited = 5  # Start at 5 since we already waited
+    $dataReady = $false
+    
+    # Get the "Stock Take Data" worksheet (or fallback to active sheet)
+    $worksheet = $null
+    try {
+        $worksheet = $workbook.Worksheets.Item("Stock Take Data")
+    } catch {
+        Write-Host "Worksheet 'Stock Take Data' not found, trying active sheet..."
+        try {
+            $worksheet = $workbook.ActiveSheet
+        } catch {
+            $worksheet = $workbook.Worksheets.Item(1)
+        }
+    }
+    
+    if (-not $worksheet) {
+        throw "Could not find worksheet 'Stock Take Data' or any other worksheet"
+    }
+    
+    Write-Host "Using worksheet: $($worksheet.Name)"
+    
+    while ($waited -lt $maxWaitTime -and -not $dataReady) {
+        Start-Sleep -Seconds $checkInterval
+        $waited += $checkInterval
+        
+        # Log progress every 10 seconds
+        if ($waited % 10 -eq 0) {
+            Write-Host "[Step 4/6] Still waiting for data... ($waited / $maxWaitTime seconds)"
+        }
+        
+        # Check if Excel is ready (not calculating or refreshing)
+        $excelReady = $false
+        try {
+            $calcState = $excel.CalculationState
+            if ($calcState -eq 0) {  # xlDone = 0
+                $excelReady = $true
+            }
+        } catch {
+            # If we can't check calculation state, assume Excel might be busy
+            $excelReady = $false
+        }
+        
+        # Only check cells if Excel appears ready
+        if ($excelReady) {
+            try {
+                # Check if row 2 (first data row, row 1 is headers) has data
+                # Check more columns to ensure we catch all data
+                $hasData = $false
+                for ($col = 1; $col -le 20; $col++) {
+                    try {
+                        $cellValue = $worksheet.Cells.Item(2, $col).Value2
+                        if ($cellValue -and $cellValue.ToString().Trim() -ne '') {
+                            $hasData = $true
+                            Write-Host "[Step 4/6] Data detected in row 2 (first data row), column $col"
+                            break
+                        }
+                    } catch {
+                        # Cell access failed, Excel might still be busy - continue
+                        continue
+                    }
+                }
+                
+                if ($hasData) {
+                    $dataReady = $true
+                    Write-Host "[Step 4/6] Data detected in row 2 after $waited seconds"
+                } else {
+                    if ($waited % 10 -eq 0) {
+                        Write-Host "[Step 4/6] Waiting for data in row 2... ($waited / $maxWaitTime seconds)"
+                    }
+                }
+            } catch {
+                # COM error - Excel is busy, just wait and try again
+                if ($waited % 10 -eq 0) {
+                    Write-Host "[Step 4/6] Excel busy, waiting... ($waited / $maxWaitTime seconds)"
+                }
+            }
+        } else {
+            if ($waited % 10 -eq 0) {
+                Write-Host "[Step 4/6] Excel calculating/refreshing, waiting... ($waited / $maxWaitTime seconds)"
+            }
+        }
+    }
+    
+    if (-not $dataReady) {
+        Write-Host "[Step 4/6] Warning: Timeout reached waiting for data in row 2 (first data row). Proceeding anyway to attempt reading..."
+    } else {
+        Write-Host "[Step 4/6] Data ready check completed successfully"
+    }
+    
+    # Wait for Excel to finish all calculations before reading (with timeout)
+    Write-Host "[Step 4/6] Ensuring Excel calculations are complete before reading..."
+    $calcComplete = $false
+    $calcWaitTime = 0
+    $maxCalcWait = 60
+    $calcCheckInterval = 5
+    
+    while (-not $calcComplete -and $calcWaitTime -lt $maxCalcWait) {
+        try {
+            $calcState = $excel.CalculationState
+            if ($calcState -eq 0) {
+                Start-Sleep -Seconds 3
+                $calcState2 = $excel.CalculationState
+                if ($calcState2 -eq 0) {
+                    $calcComplete = $true
+                    Write-Host "[Step 4/6] Excel calculations complete"
+                } else {
+                    Write-Host "[Step 4/6] Excel calculation state changed, still waiting..."
+                }
+            } else {
+                Write-Host "[Step 4/6] Excel still calculating (state: $calcState), waiting... ($calcWaitTime / $maxCalcWait seconds)"
+                Start-Sleep -Seconds $calcCheckInterval
+                $calcWaitTime += $calcCheckInterval
+            }
+        } catch {
+            Write-Host "[Step 4/6] Cannot check calculation state, waiting... ($calcWaitTime / $maxCalcWait seconds)"
+            Start-Sleep -Seconds $calcCheckInterval
+            $calcWaitTime += $calcCheckInterval
+            if ($calcWaitTime -ge $maxCalcWait) {
+                Write-Host "[Step 4/6] Calculation check timeout, proceeding anyway..."
+                $calcComplete = $true
+            }
+        }
+    }
+    
+    if (-not $calcComplete) {
+        Write-Host "[Step 4/6] Warning: Excel may still be calculating, but proceeding with data read after $maxCalcWait seconds..."
+    }
+    
+    # Read data directly from Excel sheet before closing
+    Write-Host "[Step 5/6] Reading data from Excel sheet..."
+    $csvLines = @()
+    
+    try {
+        # Ensure we're using the correct worksheet
+        if ($worksheet.Name -ne "Stock Take Data") {
+            try {
+                $worksheet = $workbook.Worksheets.Item("Stock Take Data")
+                Write-Host "Switched to worksheet: $($worksheet.Name)"
+            } catch {
+                Write-Host "Warning: Could not switch to 'Stock Take Data', using current worksheet: $($worksheet.Name)"
+            }
+        }
+        
+        # Find the last row with data - use a safer method
+        $lastRow = 0
+        try {
+            $lastRow = $worksheet.UsedRange.Rows.Count
+            Write-Host "[Step 5/6] UsedRange reports $lastRow rows"
+        } catch {
+            Write-Host "[Step 5/6] UsedRange failed, trying alternative method..."
+        }
+        
+        if ($lastRow -eq 0) {
+            # Try alternative method - find last row in column 1
+            try {
+                $lastRow = $worksheet.Cells($worksheet.Rows.Count, 1).End(-4162).Row  # xlUp = -4162
+                Write-Host "[Step 5/6] Alternative method found $lastRow rows"
+            } catch {
+                Write-Host "[Step 5/6] Alternative method failed, using fallback of 1000 rows"
+                $lastRow = 1000
+            }
+        }
+        
+        if ($lastRow -eq 0) { 
+            Write-Host "[Step 5/6] Could not determine last row, using fallback of 1000 rows"
+            $lastRow = 1000 
+        }
+        
+        Write-Host "[Step 5/6] Reading rows 1 to $lastRow from worksheet '$($worksheet.Name)' using bulk range reading..."
+        
+        # Optimized: Read data in bulk ranges instead of cell-by-cell
+        # This is MUCH faster - read entire ranges at once
+        $maxColumns = 50  # Maximum columns to read
+        $batchSize = 500  # Read 500 rows at a time (can adjust based on performance)
+        $emptyRowCount = 0
+        $maxEmptyRows = 10
+        
+        # Helper function to escape CSV values
+        function Escape-CsvValue {
+            param([string]$value)
+            if ($null -eq $value -or $value -eq '') { return '' }
+            $str = $value.ToString()
+            if ($str -match '[,"\r\n]') {
+                $str = $str -replace '"', '""'
+                return '"' + $str + '"'
+            }
+            return $str
+        }
+        
+        # Read data in batches
+        $currentRow = 1
+        while ($currentRow -le $lastRow) {
+            $batchEndRow = [Math]::Min($currentRow + $batchSize - 1, $lastRow)
+            $rowsInBatch = $batchEndRow - $currentRow + 1
+            
+            try {
+                # Read entire range at once - this is MUCH faster than cell-by-cell
+                $startCol = 1
+                $endCol = $maxColumns
+                $rangeAddress = $worksheet.Cells.Item($currentRow, $startCol).Address($false, $false) + ":" + $worksheet.Cells.Item($batchEndRow, $endCol).Address($false, $false)
+                
+                Write-Host "[Step 5/6] Reading batch: rows $currentRow to $batchEndRow (range: $rangeAddress)..."
+                
+                $range = $worksheet.Range($rangeAddress)
+                $batchValues = $range.Value2  # Get entire 2D array in one call
+                
+                # Debug: Check array dimensions
+                if ($currentRow -eq 1) {
+                    Write-Host "[Step 5/6] Debug: Array type: $($batchValues.GetType().Name)"
+                    Write-Host "[Step 5/6] Debug: Array dimensions: $($batchValues.Rank)"
+                    if ($batchValues.Rank -eq 2) {
+                        Write-Host "[Step 5/6] Debug: Array size: [$($batchValues.GetLength(0)), $($batchValues.GetLength(1))]"
+                    }
+                }
+                
+                # Process the batch
+                for ($batchRow = 0; $batchRow -lt $rowsInBatch; $batchRow++) {
+                    $actualRow = $currentRow + $batchRow
+                    $rowData = @()
+                    $hasData = $false
+                    
+                    # Process columns in this row
+                    for ($batchCol = 0; $batchCol -lt $maxColumns; $batchCol++) {
+                        try {
+                            # Access 2D array: Excel COM returns 1-based arrays
+                            # First index is row (1 to rowsInBatch), second is column (1 to maxColumns)
+                            $rowIdx = $batchRow + 1
+                            $colIdx = $batchCol + 1
+                            
+                            # Handle different array structures
+                            if ($batchValues.Rank -eq 2) {
+                                $cellValue = $batchValues[$rowIdx, $colIdx]
+                            } elseif ($batchValues -is [System.Array]) {
+                                # Try as 1D array (unlikely but possible)
+                                $cellValue = $batchValues[($batchRow * $maxColumns) + $batchCol]
+                            } else {
+                                # Single value case
+                                if ($batchRow -eq 0 -and $batchCol -eq 0) {
+                                    $cellValue = $batchValues
+                                } else {
+                                    $cellValue = $null
+                                }
+                            }
+                            
+                            if ($null -ne $cellValue -and $cellValue.ToString().Trim() -ne '') {
+                                $hasData = $true
+                                $rowData += (Escape-CsvValue $cellValue)
+                            } else {
+                                $rowData += ""
+                            }
+                        } catch {
+                            # Column might be out of bounds, add empty
+                            $rowData += ""
+                        }
+                    }
+                    
+                    # Add row if it has data, or if it's row 1 (headers)
+                    if ($hasData -or $actualRow -eq 1) {
+                        $csvLines += ($rowData -join ",")
+                        $emptyRowCount = 0
+                    } else {
+                        $emptyRowCount++
+                        if ($emptyRowCount -ge $maxEmptyRows) {
+                            Write-Host "[Step 5/6] Stopped reading after $maxEmptyRows consecutive empty rows (at row $actualRow)"
+                            $currentRow = $lastRow + 1  # Break out of outer loop
+                            break
+                        }
+                    }
+                }
+                
+                # Progress update after each batch
+                Write-Host "[Step 5/6] Batch complete: processed rows $currentRow to $batchEndRow, total CSV lines: $($csvLines.Count)"
+                
+                $currentRow = $batchEndRow + 1
+                
+                # Small delay between batches to prevent overwhelming Excel
+                if ($currentRow -le $lastRow) {
+                    Start-Sleep -Milliseconds 100
+                }
+                
+            } catch {
+                $errorMsg = $_.Exception.Message
+                Write-Host "[Step 5/6] Error reading batch (rows $currentRow to $batchEndRow): $errorMsg"
+                
+                # If batch fails, fall back to reading individual rows for this batch
+                Write-Host "[Step 5/6] Falling back to row-by-row reading for this batch..."
+                for ($row = $currentRow; $row -le $batchEndRow -and $row -le $lastRow; $row++) {
+                    $rowData = @()
+                    $hasData = $false
+                    for ($col = 1; $col -le $maxColumns; $col++) {
+                        try {
+                            $cellValue = $worksheet.Cells.Item($row, $col).Value2
+                            if ($null -ne $cellValue -and $cellValue.ToString().Trim() -ne '') {
+                                $hasData = $true
+                                $rowData += (Escape-CsvValue $cellValue)
+                            } else {
+                                $rowData += ""
+                            }
+                        } catch {
+                            break
+                        }
+                    }
+                    if ($hasData -or $row -eq 1) {
+                        $csvLines += ($rowData -join ",")
+                        $emptyRowCount = 0
+                    } else {
+                        $emptyRowCount++
+                        if ($emptyRowCount -ge $maxEmptyRows) {
+                            $currentRow = $lastRow + 1
+                            break
+                        }
+                    }
+                }
+                $currentRow = $batchEndRow + 1
+            }
+        }
+        
+        Write-Host "[Step 5/6] Read $($csvLines.Count) rows from Excel (scanned up to row $currentRow of $lastRow)"
+        
+    } catch {
+        Write-Host "Error reading Excel data: $($_.Exception.Message)"
+        throw "Failed to read data from Excel: $($_.Exception.Message)"
+    }
+    
+    Write-Host "[Step 6/6] Processing CSV and closing Excel..."
+    # Convert to CSV string
+    $csvContent = $csvLines -join [Environment]::NewLine
+    
+    # Save the workbook (macro refreshed data, we save it)
+    Write-Host "[Step 6/6] Saving workbook..."
+    $workbook.Save()
+    
+    # Close Excel
+    Write-Host "[Step 6/6] Closing Excel..."
+    $workbook.Close($false)
+    $excel.Quit()
+    
+    # Release COM objects if they exist
+    try {
+        [System.Runtime.Interopservices.Marshal]::ReleaseComObject($worksheet) | Out-Null
+    } catch {}
+    try {
+        [System.Runtime.Interopservices.Marshal]::ReleaseComObject($workbook) | Out-Null
+    } catch {}
+    try {
+        [System.Runtime.Interopservices.Marshal]::ReleaseComObject($excel) | Out-Null
+    } catch {}
+    [System.GC]::Collect()
+    [System.GC]::WaitForPendingFinalizers()
+    
+    Write-Host "SUCCESS"
+    Write-Host "CSV_CONTENT_START"
+    # Output CSV content directly to stdout (not Write-Host which may truncate)
+    # Split by newlines and write each line to ensure proper output
+    $newline = [Environment]::NewLine
+    $csvLinesArray = $csvContent -split $newline
+    $lineCount = $csvLinesArray.Count
+    # Send debug info to stderr, not stdout
+    [Console]::Error.WriteLine("[Output] Writing $lineCount CSV lines to output...")
+    [Console]::Error.WriteLine("[Output] First 3 lines preview:")
+    for ($i = 0; $i -lt [Math]::Min(3, $csvLinesArray.Length); $i++) {
+        $preview = $csvLinesArray[$i].Substring(0, [Math]::Min(100, $csvLinesArray[$i].Length))
+        [Console]::Error.WriteLine("[Output] Line $($i+1): $preview")
+    }
+    # Output ONLY the actual CSV lines to stdout (between markers)
+    foreach ($line in $csvLinesArray) {
+        [Console]::Out.WriteLine($line)
+    }
+    Write-Host "CSV_CONTENT_END"
+} catch {
+    $errorMsg = $_.Exception.Message
+    Write-Host "ERROR: $errorMsg"
+    exit 1
+}`;
+        
+        // Write script to temp file
+        console.log('[Excel Refresh] Writing PowerShell script to:', tempScriptPath);
+        fs.writeFileSync(tempScriptPath, powershellScript, 'utf8');
+        console.log('[Excel Refresh] PowerShell script written, size:', powershellScript.length, 'bytes');
+        
+        try {
+            // Execute PowerShell script with increased timeout and buffer
+            // Excel operations can take several minutes, so we need a long timeout
+            const timeoutMs = 10 * 60 * 1000; // 10 minutes timeout
+            console.log('[Excel Refresh] Starting PowerShell execution with', timeoutMs / 1000, 'second timeout');
+            const execStartTime = Date.now();
+            
+            // Use spawn instead of exec to get real-time output
+            const { spawn } = require('child_process');
+            let accumulatedStdout = '';
+            let accumulatedStderr = '';
+            
+            const powershellProcess = spawn('powershell.exe', [
+                '-ExecutionPolicy', 'Bypass',
+                '-File', tempScriptPath
+            ], {
+                maxBuffer: 1024 * 1024 * 50,
+                timeout: timeoutMs
+            });
+            
+            // Capture output in real-time
+            powershellProcess.stdout.on('data', (data) => {
+                const output = data.toString();
+                accumulatedStdout += output;
+                // Log important steps immediately (but filter out CSV content)
+                if (output.includes('[Step') || output.includes('SUCCESS') || output.includes('ERROR')) {
+                    // Only log if it's not CSV content
+                    if (!output.includes('CSV_CONTENT_START') && !output.includes('CSV_CONTENT_END') && 
+                        !output.match(/^[^,\r\n]*,[^,\r\n]*,/)) { // Not a CSV line pattern
+                        console.log('[Excel Refresh] PowerShell:', output.trim());
+                    }
+                }
+            });
+            
+            powershellProcess.stderr.on('data', (data) => {
+                const stderrOutput = data.toString();
+                accumulatedStderr += stderrOutput;
+                // Log stderr output (debug messages)
+                if (stderrOutput.includes('[Output]') || stderrOutput.includes('[Step')) {
+                    console.log('[Excel Refresh] PowerShell (stderr):', stderrOutput.trim());
+                }
+            });
+            
+            const execPromise = new Promise((resolve, reject) => {
+                powershellProcess.on('close', (code) => {
+                    if (code === 0) {
+                        resolve({ stdout: accumulatedStdout, stderr: accumulatedStderr });
+                    } else {
+                        reject(new Error(`PowerShell exited with code ${code}. Stderr: ${accumulatedStderr}`));
+                    }
+                });
+                
+                powershellProcess.on('error', (error) => {
+                    reject(error);
+                });
+            });
+            
+            // Log progress every 30 seconds
+            const progressInterval = setInterval(() => {
+                const elapsed = Math.round((Date.now() - execStartTime) / 1000);
+                console.log(`[Excel Refresh] Still running... (${elapsed}s elapsed)`);
+                // Try to get last few lines of output for debugging
+                const lastLines = accumulatedStdout.split('\n').slice(-5).join('\n');
+                if (lastLines.trim()) {
+                    console.log('[Excel Refresh] Last PowerShell output:', lastLines.trim());
+                }
+            }, 30000); // Every 30 seconds
+            
+            // Add additional timeout wrapper in case exec timeout doesn't work
+            let timeoutReached = false;
+            const timeoutPromise = new Promise((_, reject) => {
+                setTimeout(() => {
+                    timeoutReached = true;
+                    clearInterval(progressInterval);
+                    console.log('[Excel Refresh] Timeout reached, killing PowerShell process...');
+                    powershellProcess.kill();
+                    reject(new Error('Excel refresh operation timed out after 10 minutes'));
+                }, timeoutMs);
+            });
+            
+            let result;
+            try {
+                result = await Promise.race([execPromise, timeoutPromise]);
+                clearInterval(progressInterval);
+            } catch (error) {
+                clearInterval(progressInterval);
+                if (timeoutReached) {
+                    console.error('[Excel Refresh] Process was killed due to timeout');
+                }
+                throw error;
+            }
+            
+            const { stdout, stderr } = result;
+            
+            const execDuration = Math.round((Date.now() - execStartTime) / 1000);
+            console.log(`[Excel Refresh] PowerShell execution completed in ${execDuration} seconds`);
+        
+            // Log output for debugging (truncated if too long)
+            const outputPreview = stdout.length > 1000 ? stdout.substring(0, 1000) + '...' : stdout;
+            console.log('[Excel Refresh] PowerShell output length:', stdout.length);
+            console.log('[Excel Refresh] Output preview:', outputPreview);
+            
+            if (stderr && !stdout.includes('SUCCESS')) {
+                console.error('[Excel Refresh] PowerShell error:', stderr);
+                console.error('[Excel Refresh] Full stdout:', stdout);
+                return res.status(500).json({ 
+                    message: `Failed to execute macro: ${stderr || 'Unknown error'}` 
+                });
+            }
+            
+            // Check if SUCCESS marker is present
+            if (!stdout.includes('SUCCESS')) {
+                console.error('[Excel Refresh] SUCCESS marker not found in output');
+                console.error('[Excel Refresh] Full stdout:', stdout.substring(0, 5000));
+                return res.status(500).json({ 
+                    message: 'Excel refresh did not complete successfully. Check server logs for details.' 
+                });
+            }
+            
+            // Extract CSV content from PowerShell output (between markers)
+            const csvStartMarker = 'CSV_CONTENT_START';
+            const csvEndMarker = 'CSV_CONTENT_END';
+            const startIndex = stdout.indexOf(csvStartMarker);
+            const endIndex = stdout.indexOf(csvEndMarker);
+            
+            console.log('[Excel Refresh] CSV marker positions:', { startIndex, endIndex });
+            
+            let csvContent = '';
+            if (startIndex !== -1 && endIndex !== -1 && endIndex > startIndex) {
+                // Extract content between markers
+                const rawContent = stdout.substring(startIndex + csvStartMarker.length, endIndex);
+                csvContent = rawContent.trim();
+                console.log('[Excel Refresh] Extracted CSV content length:', csvContent.length);
+            } else {
+                // Fallback: try to read from file if markers not found
+                console.warn('[Excel Refresh] CSV markers not found in output, trying to read from file...');
+                console.warn('[Excel Refresh] Marker search result:', { 
+                    startIndex, 
+                    endIndex, 
+                    hasStart: stdout.includes(csvStartMarker),
+                    hasEnd: stdout.includes(csvEndMarker),
+                    stdoutLength: stdout.length
+                });
+                if (fs.existsSync(outputCsvPath)) {
+                    csvContent = fs.readFileSync(outputCsvPath, 'utf8');
+                    console.log('[Excel Refresh] Read CSV from file, length:', csvContent.length);
+                } else {
+                    console.error('[Excel Refresh] File not found:', outputCsvPath);
+                    return res.status(500).json({ 
+                        message: 'Failed to extract CSV data. Macro may have executed but data could not be read. Check server logs for details.' 
+                    });
+                }
+            }
+            
+            if (!csvContent || csvContent.trim().length === 0) {
+                console.error('[Excel Refresh] CSV content is empty after extraction');
+                return res.status(500).json({ 
+                    message: 'No data found in Excel sheet. Please check that the macro refreshed the data correctly.' 
+                });
+            }
+            
+            console.log('[Excel Refresh] Successfully extracted CSV, first 200 chars:', csvContent.substring(0, 200));
+            
+            const totalDuration = Math.round((Date.now() - startTime) / 1000);
+            console.log(`[Excel Refresh] Total operation completed in ${totalDuration} seconds`);
+            console.log('[Excel Refresh] CSV content length:', csvContent.length, 'characters');
+            console.log('[Excel Refresh] CSV line count (approx):', csvContent.split('\n').length);
+            
+            res.json({ 
+                success: true,
+                message: 'Excel macro executed successfully',
+                csvContent: csvContent,
+                fileName: 'Stock Count.csv'
+            });
+        } finally {
+            // Clean up temp script file
+            try {
+                if (fs.existsSync(tempScriptPath)) {
+                    fs.unlinkSync(tempScriptPath);
+                }
+            } catch (cleanupError) {
+                console.warn('Failed to cleanup temp script:', cleanupError);
+            }
+        }
+        
+    } catch (error) {
+        console.error('Excel refresh error:', error);
+        res.status(500).json({ 
+            message: `Failed to refresh Excel: ${error.message}` 
+        });
+    }
 });
 
 

@@ -641,8 +641,8 @@ export default function Summary() {
                 const pageHeight = 280; // A4 height minus margins
                 const lineHeight = 8;
                 const col1X = 14; // Bin Location column start
-                const col2X = 80; // Item Code column start
-                const col2Width = 120; // Item Code column end
+                const col2X = 55; // Item Code column start
+                const col3X = 100; // Counted column start
                 const tableEndX = 200; // End of table
                 let yPos = 20;
                 let isFirstGroup = true;
@@ -692,6 +692,7 @@ export default function Summary() {
                   pdf.setFont(undefined, 'bold');
                   pdf.text('Bin Location', col1X, yPos);
                   pdf.text('Item Code', col2X, yPos);
+                  pdf.text('Counted', col3X, yPos);
                   
                   // Draw table top border
                   pdf.setLineWidth(0.5);
@@ -713,7 +714,8 @@ export default function Summary() {
                     if (yPos > pageHeight) {
                       // Draw vertical lines for current page before new page
                       pdf.line(col1X, tableTopY, col1X, tableBottomY - 4); // Left border
-                      pdf.line(col2X, tableTopY, col2X, tableBottomY - 4); // Column separator
+                      pdf.line(col2X, tableTopY, col2X, tableBottomY - 4); // Column separator (Item Code)
+                      pdf.line(col3X, tableTopY, col3X, tableBottomY - 4); // Column separator (Counted)
                       pdf.line(tableEndX, tableTopY, tableEndX, tableBottomY - 4); // Right border
                       pdf.line(col1X, tableBottomY - 4, tableEndX, tableBottomY - 4); // Bottom border
                       
@@ -722,9 +724,11 @@ export default function Summary() {
                       headerY = yPos;
                       tableTopY = headerY - 4; // Update tableTopY for new page
                       // Re-print headers on new page
+                      pdf.setFontSize(10);
                       pdf.setFont(undefined, 'bold');
                       pdf.text('Bin Location', col1X, yPos);
                       pdf.text('Item Code', col2X, yPos);
+                      pdf.text('Counted', col3X, yPos);
                       
                       // Redraw gridlines for new page header
                       pdf.setLineWidth(0.5);
@@ -738,6 +742,7 @@ export default function Summary() {
                     
                     pdf.text(item.binLocation || '-', col1X, yPos);
                     pdf.text(item.itemCode || '-', col2X, yPos);
+                    // Leave Counted column blank for manual marking
                     
                     // Draw horizontal line after each row
                     pdf.line(col1X, yPos + 4, tableEndX, yPos + 4);
@@ -748,7 +753,8 @@ export default function Summary() {
                   
                   // Draw vertical lines for the entire table (from top to bottom)
                   pdf.line(col1X, tableTopY, col1X, tableBottomY - 4); // Left border
-                  pdf.line(col2X, tableTopY, col2X, tableBottomY - 4); // Column separator
+                  pdf.line(col2X, tableTopY, col2X, tableBottomY - 4); // Column separator (Item Code)
+                  pdf.line(col3X, tableTopY, col3X, tableBottomY - 4); // Column separator (Counted)
                   pdf.line(tableEndX, tableTopY, tableEndX, tableBottomY - 4); // Right border
                   // Final bottom border of table
                   pdf.line(col1X, tableBottomY - 4, tableEndX, tableBottomY - 4);
