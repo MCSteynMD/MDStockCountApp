@@ -885,12 +885,11 @@ export default function Summary() {
                 onChange={handleJournalFile} 
                 className="px-3 py-2 border border-[#C8C6C4] bg-white text-gray-800 rounded-sm focus:outline-none focus:ring-2 focus:ring-[#0078D4] focus:border-[#0078D4] file:mr-4 file:py-1.5 file:px-4 file:rounded-sm file:border-0 file:text-sm file:font-medium file:bg-[#0078D4] file:text-white hover:file:bg-[#106EBE] cursor-pointer"
               />
-              <textarea 
-                className="min-h-[120px] px-3 py-2 border border-[#C8C6C4] bg-[#F3F2F1] text-gray-700 rounded-sm resize-none" 
-                value={journalCsv} 
-                readOnly
-                placeholder="Journal CSV will appear here after file upload. Contents cannot be edited." 
-              />
+              {journalCsv && (
+                <div className="text-sm text-[#107C10] bg-[#DFF6DD] px-3 py-2 rounded-sm">
+                  ✓ Journal file uploaded successfully
+                </div>
+              )}
             </div>
             <div className="grid gap-3">
               <div className="flex items-center justify-between">
@@ -905,12 +904,11 @@ export default function Summary() {
                 onChange={handleCountsFile} 
                 className="px-3 py-2 border border-[#C8C6C4] bg-white text-gray-800 rounded-sm focus:outline-none focus:ring-2 focus:ring-[#0078D4] focus:border-[#0078D4] file:mr-4 file:py-1.5 file:px-4 file:rounded-sm file:border-0 file:text-sm file:font-medium file:bg-[#0078D4] file:text-white hover:file:bg-[#106EBE] cursor-pointer"
               />
-              <textarea 
-                className="min-h-[160px] px-3 py-2 border border-[#C8C6C4] bg-[#F3F2F1] text-gray-700 rounded-sm resize-none" 
-                value={countsCsv} 
-                readOnly
-                placeholder="Counts CSV will appear here after file upload. Contents cannot be edited." 
-              />
+              {countsCsv && (
+                <div className="text-sm text-[#107C10] bg-[#DFF6DD] px-3 py-2 rounded-sm">
+                  ✓ Stock count file uploaded successfully
+                </div>
+              )}
             </div>
           </div>
         )}

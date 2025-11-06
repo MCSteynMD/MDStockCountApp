@@ -35,11 +35,8 @@ export default function AppLayout() {
           {hasVisitedHome && (
             <nav className="flex items-center gap-1">
               {navLink('/', 'Home')}
-              {navLink('/stock', 'Stock')}
-              {navLink('/reports', 'Reports')}
               {navLink('/summary', 'Summary')}
               {navLink('/reconcile', 'Reconcile')}
-              {navLink('/admin', 'Admin')}
             </nav>
           )}
         </div>

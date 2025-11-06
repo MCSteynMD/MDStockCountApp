@@ -93,6 +93,13 @@ export default function Home() {
     // Reset dates when no file is uploaded
     setDates([]);
     
+    // Clear selections when no file is uploaded
+    if (!fileUploaded) {
+      setSelectedCompany('');
+      setSelectedWarehouse('');
+      setSelectedDate('');
+    }
+    
     // Otherwise load from API
     (async () => {
       try {
@@ -440,35 +447,37 @@ export default function Home() {
           </div>
         )}
         
-        {/* Company dropdown */}
-        <div className="grid gap-2">
-          <label className="text-sm font-medium text-gray-700">Company</label>
-          <select
-            value={selectedCompany}
-            onChange={(e) => {
-              setSelectedCompany(e.target.value);
-              setSelectedWarehouse('');
-            }}
-            className="px-3 py-2 border border-[#C8C6C4] bg-white text-gray-800 rounded-sm focus:outline-none focus:ring-2 focus:ring-[#0078D4] focus:border-[#0078D4]"
-          >
-            <option value="">-- Select Company --</option>
-            {companies.map(comp => (
-              <option key={comp.code} value={comp.code}>
-                {comp.code} - {comp.name}
-              </option>
-            ))}
-          </select>
-        </div>
+        {/* Company dropdown - only show when file is uploaded */}
+        {fileUploaded && (
+          <div className="grid gap-2">
+            <label className="text-sm font-medium text-gray-700">Company</label>
+            <select
+              value={selectedCompany}
+              onChange={(e) => {
+                setSelectedCompany(e.target.value);
+                setSelectedWarehouse('');
+              }}
+              className="px-3 py-2 border border-[#C8C6C4] bg-white text-gray-800 rounded-sm focus:outline-none focus:ring-2 focus:ring-[#0078D4] focus:border-[#0078D4]"
+            >
+              <option value="">-- Select Company --</option>
+              {companies.map(comp => (
+                <option key={comp.code} value={comp.code}>
+                  {comp.code} - {comp.name}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
 
-        {/* Warehouse dropdown */}
-        {selectedCompany && (
+        {/* Warehouse dropdown - only show when file is uploaded and company is selected */}
+        {fileUploaded && selectedCompany && (
           <div className="grid gap-2">
             <label className="text-sm font-medium text-gray-700">Warehouse</label>
             <select
               value={selectedWarehouse}
               onChange={(e) => setSelectedWarehouse(e.target.value)}
               className="px-3 py-2 border border-[#C8C6C4] bg-white text-gray-800 rounded-sm focus:outline-none focus:ring-2 focus:ring-[#0078D4] focus:border-[#0078D4] disabled:bg-[#F3F2F1] disabled:text-gray-500 disabled:cursor-not-allowed"
-              disabled={!selectedCompany || warehouses.length === 0}
+              disabled={warehouses.length === 0}
             >
               <option value="">-- Select Warehouse --</option>
               {warehouses.map(wh => (
@@ -477,7 +486,7 @@ export default function Home() {
                 </option>
               ))}
             </select>
-            {warehouses.length === 0 && selectedCompany && (
+            {warehouses.length === 0 && (
               <div className="text-xs text-gray-500 bg-[#FFF4CE] px-2 py-1.5 rounded-sm mt-1">No warehouses found for this company</div>
             )}
           </div>
@@ -487,7 +496,7 @@ export default function Home() {
           <button 
             onClick={saveSelection} 
             className="px-4 py-2 bg-[#0078D4] text-white rounded-sm hover:bg-[#106EBE] active:bg-[#005A9E] disabled:opacity-50 disabled:cursor-not-allowed font-medium transition-colors"
-            disabled={!selectedCompany}
+            disabled={!fileUploaded || !selectedCompany}
           >
             Save
           </button>
@@ -498,7 +507,7 @@ export default function Home() {
           )}
         </div>
         
-        {selectedCompany && (
+        {fileUploaded && selectedCompany && (
           <div className="text-sm text-gray-600 bg-[#F3F2F1] px-3 py-2 rounded-sm">
             <span className="font-medium">Selected:</span> {selectedCompany}{selectedWarehouse ? ` - ${selectedWarehouse}` : ''}
           </div>

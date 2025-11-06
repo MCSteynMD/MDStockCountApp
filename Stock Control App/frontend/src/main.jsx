@@ -5,9 +5,6 @@ import { createBrowserRouter, RouterProvider, Navigate } from 'react-router-dom'
 import { ThemeProvider } from './theme/ThemeContext'
 import AppLayout from './shell/AppLayout'
 import Home from './pages/Home'
-import Admin from './pages/Admin'
-import Stock from './pages/Stock'
-import Reports from './pages/Reports'
 import Reconcile from './pages/Reconcile'
 import Summary from './pages/Summary'
 import ProtectedRoute from './components/ProtectedRoute'
@@ -18,30 +15,6 @@ const router = createBrowserRouter([
     element: <AppLayout />,
     children: [
       { index: true, element: <Home /> },
-      { 
-        path: 'admin', 
-        element: (
-          <ProtectedRoute>
-            <Admin />
-          </ProtectedRoute>
-        ) 
-      },
-      { 
-        path: 'stock', 
-        element: (
-          <ProtectedRoute>
-            <Stock />
-          </ProtectedRoute>
-        ) 
-      },
-      { 
-        path: 'reports', 
-        element: (
-          <ProtectedRoute>
-            <Reports />
-          </ProtectedRoute>
-        ) 
-      },
       { 
         path: 'reconcile', 
         element: (

@@ -596,12 +596,11 @@ function ReconcileContent() {
             onChange={handleJournalFile}
             className="px-3 py-2 border border-[#C8C6C4] bg-white text-gray-800 rounded-sm focus:outline-none focus:ring-2 focus:ring-[#0078D4] focus:border-[#0078D4] file:mr-4 file:py-1.5 file:px-4 file:rounded-sm file:border-0 file:text-sm file:font-medium file:bg-[#0078D4] file:text-white hover:file:bg-[#106EBE] cursor-pointer"
           />
-          <textarea 
-            className="min-h-[120px] px-3 py-2 border border-[#C8C6C4] bg-white text-gray-800 rounded-sm focus:outline-none focus:ring-2 focus:ring-[#0078D4] focus:border-[#0078D4] resize-none" 
-            value={journalCsv} 
-            onChange={e=>setJournalCsv(e.target.value)} 
-            placeholder="Paste Journal CSV/Excel export here. Expected headers include Item Code and Book/On Hand."
-          />
+          {journalCsv && (
+            <div className="text-sm text-[#107C10] bg-[#DFF6DD] px-3 py-2 rounded-sm">
+              ✓ Journal file uploaded successfully
+            </div>
+          )}
         </div>
         
         <div className="grid gap-3">
@@ -635,12 +634,11 @@ function ReconcileContent() {
             onChange={handleCountsFile}
             className="px-3 py-2 border border-[#C8C6C4] bg-white text-gray-800 rounded-sm focus:outline-none focus:ring-2 focus:ring-[#0078D4] focus:border-[#0078D4] file:mr-4 file:py-1.5 file:px-4 file:rounded-sm file:border-0 file:text-sm file:font-medium file:bg-[#0078D4] file:text-white hover:file:bg-[#106EBE] cursor-pointer"
           />
-          <textarea 
-            className="min-h-[160px] px-3 py-2 border border-[#C8C6C4] bg-white text-gray-800 rounded-sm focus:outline-none focus:ring-2 focus:ring-[#0078D4] focus:border-[#0078D4] resize-none" 
-            value={countsCsv} 
-            onChange={e=>setCountsCsv(e.target.value)} 
-            placeholder="Stock count data from Excel (synced automatically) or paste CSV data here. Headers like Item Code and Counted/Quantity."
-          />
+          {countsCsv && (
+            <div className="text-sm text-[#107C10] bg-[#DFF6DD] px-3 py-2 rounded-sm">
+              ✓ Stock count file uploaded successfully
+            </div>
+          )}
         </div>
         
         <div className="flex gap-3 pt-2">
