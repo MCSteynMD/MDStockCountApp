@@ -1,6 +1,8 @@
 import { useNavigate } from 'react-router-dom';
 import { api } from '../lib/api';
 import { useEffect, useState } from 'react';
+import { processFile } from '../lib/excelUtils';
+import { getFutureCounts, getFutureCountsForDate } from '../lib/futureCounts';
 
 export default function Home() {
   const navigate = useNavigate();
@@ -16,10 +18,70 @@ export default function Home() {
   const [uploadedFileContent, setUploadedFileContent] = useState('');
   const [refreshingExcel, setRefreshingExcel] = useState(false);
   const [refreshProgress, setRefreshProgress] = useState('');
+  const [isFinalCount, setIsFinalCount] = useState(false);
+  const [finalCountsCollapsed, setFinalCountsCollapsed] = useState(true);
+  const [finalCounts, setFinalCounts] = useState([]);
+  const [futureCounts, setFutureCounts] = useState([]);
+  const [currentMonth, setCurrentMonth] = useState(new Date().getMonth());
+  const [currentYear, setCurrentYear] = useState(new Date().getFullYear());
+  const [selectedCalendarDate, setSelectedCalendarDate] = useState(null);
 
   // Mark that user has visited Home page
   useEffect(() => {
     sessionStorage.setItem('hasVisitedHome', 'true');
+  }, []);
+
+  // Load future counts
+  useEffect(() => {
+    const loadFutureCounts = () => {
+      const counts = getFutureCounts();
+      setFutureCounts(counts);
+    };
+    
+    loadFutureCounts();
+    
+    // Listen for updates
+    const handleUpdate = () => {
+      loadFutureCounts();
+    };
+    
+    window.addEventListener('futureCountsUpdated', handleUpdate);
+    return () => window.removeEventListener('futureCountsUpdated', handleUpdate);
+  }, []);
+
+  // Load final counts from sessionStorage
+  useEffect(() => {
+    const updateFinalCounts = () => {
+      try {
+        const savedCountsStr = sessionStorage.getItem('savedCounts');
+        if (savedCountsStr) {
+          const savedCounts = JSON.parse(savedCountsStr);
+          // Filter only final counts and sort by date (newest first)
+          const finals = savedCounts
+            .filter(count => count.isFinal)
+            .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+          setFinalCounts(finals);
+        } else {
+          setFinalCounts([]);
+        }
+      } catch (error) {
+        console.error('Error loading final counts:', error);
+        setFinalCounts([]);
+      }
+    };
+
+    updateFinalCounts();
+    
+    // Listen for updates
+    const handleCountsUpdate = () => {
+      updateFinalCounts();
+    };
+    
+    window.addEventListener('countsUpdated', handleCountsUpdate);
+    
+    return () => {
+      window.removeEventListener('countsUpdated', handleCountsUpdate);
+    };
   }, []);
 
   async function loadWarehouses(companyCode) {
@@ -181,6 +243,8 @@ export default function Home() {
 
   async function saveSelection() {
     if (!selectedCompany) return alert('Please select a company');
+    if (!selectedDate) return alert('Please select a date');
+    if (!selectedWarehouse) return alert('Please select a warehouse');
     
     await api.post('/api/companies/select', { 
       company: selectedCompany,
@@ -200,6 +264,27 @@ export default function Home() {
       // Store uploaded file content if available
       if (uploadedFileContent) {
         sessionStorage.setItem('uploadedCountsFileContent', uploadedFileContent);
+        
+        // Save count to savedCounts array
+        const savedCountsStr = sessionStorage.getItem('savedCounts');
+        const savedCounts = savedCountsStr ? JSON.parse(savedCountsStr) : [];
+        
+        const newCount = {
+          company: selectedCompany,
+          warehouse: selectedWarehouse || '',
+          date: selectedDate || '',
+          isFinal: isFinalCount,
+          countData: uploadedFileContent,
+          timestamp: new Date().toISOString()
+        };
+        
+        savedCounts.push(newCount);
+        // Keep only last 6 counts (as per requirement)
+        const trimmedCounts = savedCounts.slice(-6);
+        sessionStorage.setItem('savedCounts', JSON.stringify(trimmedCounts));
+        
+        // Dispatch event to update count display in header
+        window.dispatchEvent(new Event('countsUpdated'));
       }
       
       // Store company name for filtering (find from parsed options)
@@ -219,8 +304,12 @@ export default function Home() {
     
     setStatus(`Company: ${selectedCompany}${selectedWarehouse ? `, Warehouse: ${selectedWarehouse}` : ''}${selectedDate ? `, Date: ${formatDate(selectedDate)}` : ''}`);
     
-    // Redirect to Summary page
-    navigate('/summary');
+    // Redirect based on final count flag
+    if (isFinalCount) {
+      navigate('/report');
+    } else {
+      navigate('/summary');
+    }
   }
   
   function formatDate(dateStr) {
@@ -311,13 +400,18 @@ export default function Home() {
     const file = e.target.files?.[0];
     if (!file) return;
     
-    try {
-      const text = await file.text();
-      await processCsvContent(text);
-    } catch (error) {
-      console.error('Error reading file:', error);
-      setStatus(`Error: ${error.message}`);
-    }
+    await processFile(
+      file,
+      async (csvText) => {
+        await processCsvContent(csvText);
+        // Update count display when file is loaded
+        window.dispatchEvent(new Event('countsUpdated'));
+      },
+      (errorMessage) => {
+        setStatus(`Error: ${errorMessage}`);
+        console.error('Error processing file:', errorMessage);
+      }
+    );
   }
 
   async function handleRefreshExcel() {
@@ -373,14 +467,180 @@ export default function Home() {
     }
   }
 
+  // Calendar helper functions
+  const getDaysInMonth = (month, year) => {
+    return new Date(year, month + 1, 0).getDate();
+  };
+
+  const getFirstDayOfMonth = (month, year) => {
+    return new Date(year, month, 1).getDay();
+  };
+
+  const renderCalendar = () => {
+    const daysInMonth = getDaysInMonth(currentMonth, currentYear);
+    const firstDay = getFirstDayOfMonth(currentMonth, currentYear);
+    const days = [];
+    const today = new Date();
+    const isCurrentMonth = currentMonth === today.getMonth() && currentYear === today.getFullYear();
+    
+    // Add empty cells for days before the first day of the month
+    for (let i = 0; i < firstDay; i++) {
+      days.push(null);
+    }
+    
+    // Add cells for each day of the month
+    for (let day = 1; day <= daysInMonth; day++) {
+      const date = new Date(currentYear, currentMonth, day);
+      const dateStr = date.toISOString().split('T')[0];
+      const countsForDay = getFutureCountsForDate(dateStr);
+      const isToday = isCurrentMonth && day === today.getDate();
+      const isPast = date < new Date() && !isToday;
+      
+      days.push({
+        day,
+        date,
+        dateStr,
+        countsForDay,
+        isToday,
+        isPast
+      });
+    }
+    
+    const monthNames = ['January', 'February', 'March', 'April', 'May', 'June', 
+                       'July', 'August', 'September', 'October', 'November', 'December'];
+    const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    
+    const navigateMonth = (direction) => {
+      if (direction === 'prev') {
+        if (currentMonth === 0) {
+          setCurrentMonth(11);
+          setCurrentYear(currentYear - 1);
+        } else {
+          setCurrentMonth(currentMonth - 1);
+        }
+      } else {
+        if (currentMonth === 11) {
+          setCurrentMonth(0);
+          setCurrentYear(currentYear + 1);
+        } else {
+          setCurrentMonth(currentMonth + 1);
+        }
+      }
+    };
+    
+    return (
+      <div className="bg-white dark:bg-[#2d2d2d] rounded-sm border border-[#EDEBE9] dark:border-[#404040] shadow-[0_4px_8px_rgba(0,0,0,0.12),0_2px_4px_rgba(0,0,0,0.08)] p-6">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-base font-semibold text-gray-800 dark:text-gray-200">Scheduled Counts Calendar</h3>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => navigateMonth('prev')}
+              className="px-2 py-1 border border-[#C8C6C4] dark:border-[#505050] bg-white dark:bg-[#1a1a1a] text-gray-700 dark:text-gray-300 rounded-sm hover:bg-[#F3F2F1] dark:hover:bg-[#353535] active:scale-95 transition-all"
+            >
+              ‹
+            </button>
+            <span className="px-3 py-1 text-sm font-medium text-gray-800 dark:text-gray-200 min-w-[150px] text-center">
+              {monthNames[currentMonth]} {currentYear}
+            </span>
+            <button
+              onClick={() => navigateMonth('next')}
+              className="px-2 py-1 border border-[#C8C6C4] dark:border-[#505050] bg-white dark:bg-[#1a1a1a] text-gray-700 dark:text-gray-300 rounded-sm hover:bg-[#F3F2F1] dark:hover:bg-[#353535] active:scale-95 transition-all"
+            >
+              ›
+            </button>
+            <button
+              onClick={() => {
+                const now = new Date();
+                setCurrentMonth(now.getMonth());
+                setCurrentYear(now.getFullYear());
+              }}
+              className="px-3 py-1 text-xs border border-[#C8C6C4] dark:border-[#505050] bg-white dark:bg-[#1a1a1a] text-gray-700 dark:text-gray-300 rounded-sm hover:bg-[#F3F2F1] dark:hover:bg-[#353535] active:scale-95 transition-all"
+            >
+              Today
+            </button>
+          </div>
+        </div>
+        
+        <div className="grid grid-cols-7 gap-1">
+          {/* Day headers */}
+          {dayNames.map(day => (
+            <div key={day} className="p-2 text-center text-xs font-semibold text-gray-600 dark:text-gray-400">
+              {day}
+            </div>
+          ))}
+          
+          {/* Calendar days */}
+          {days.map((dayData, idx) => {
+            if (dayData === null) {
+              return <div key={`empty-${idx}`} className="p-2"></div>;
+            }
+            
+            const { day, countsForDay, isToday, isPast } = dayData;
+            
+            return (
+              <div
+                key={day}
+                onClick={() => countsForDay.length > 0 && setSelectedCalendarDate(dayData)}
+                className={`p-2 min-h-[60px] border border-[#EDEBE9] dark:border-[#404040] rounded-sm ${
+                  isToday 
+                    ? 'bg-[#E8F4FD] dark:bg-[#1a3a52] border-[#0078D4] dark:border-[#0078D4]' 
+                    : isPast
+                    ? 'bg-[#F3F2F1] dark:bg-[#2a2a2a] opacity-60'
+                    : 'bg-white dark:bg-[#2d2d2d] hover:bg-[#F3F2F1] dark:hover:bg-[#353535]'
+                } ${countsForDay.length > 0 ? 'cursor-pointer' : ''} transition-colors`}
+              >
+                <div className={`text-sm font-medium mb-1 ${isToday ? 'text-[#0078D4] dark:text-[#4da6ff]' : 'text-gray-800 dark:text-gray-200'}`}>
+                  {day}
+                </div>
+                {countsForDay.length > 0 && (
+                  <div className="space-y-1">
+                    {countsForDay.slice(0, 2).map((count, i) => (
+                      <div
+                        key={i}
+                        className="text-xs px-1.5 py-0.5 bg-[#0078D4] dark:bg-[#0078D4] text-white rounded truncate"
+                        title={`${count.company || 'Count'}${count.warehouse ? ` - ${count.warehouse}` : ''}${count.notes ? `: ${count.notes}` : ''}`}
+                      >
+                        {count.company || 'Count'}
+                      </div>
+                    ))}
+                    {countsForDay.length > 2 && (
+                      <div className="text-xs text-gray-600 dark:text-gray-400">
+                        +{countsForDay.length - 2} more
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+        
+        {/* Legend */}
+        <div className="mt-4 pt-4 border-t border-[#EDEBE9] dark:border-[#404040] flex items-center gap-4 text-xs text-gray-600 dark:text-gray-400">
+          <div className="flex items-center gap-2">
+            <div className="w-4 h-4 bg-[#E8F4FD] dark:bg-[#1a3a52] border border-[#0078D4] rounded"></div>
+            <span>Today</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="w-4 h-4 bg-[#0078D4] rounded"></div>
+            <span>Scheduled Count</span>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div className="grid gap-6">
       <div>
-        <h2 className="text-2xl font-semibold text-gray-800 mb-1">Welcome</h2>
-        <p className="text-sm text-gray-600">Select your company and warehouse to get started</p>
+        <h2 className="text-2xl font-semibold text-gray-800 dark:text-gray-200 mb-1">Welcome</h2>
+        <p className="text-sm text-gray-600 dark:text-gray-400">Select your company and warehouse to get started</p>
       </div>
 
-      <div className="bg-white rounded-sm border border-[#EDEBE9] shadow-sm p-6 grid gap-4 sm:max-w-2xl">
+      {/* Calendar and Selection Side by Side */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Company and Warehouse Selection */}
+        <div className="bg-white dark:bg-[#2d2d2d] rounded-sm border border-[#EDEBE9] dark:border-[#404040] shadow-[0_4px_8px_rgba(0,0,0,0.12),0_2px_4px_rgba(0,0,0,0.08)] p-6 grid gap-4 transition-shadow hover:shadow-[0_6px_12px_rgba(0,0,0,0.15),0_3px_6px_rgba(0,0,0,0.1)]">
         <div className="border-b border-[#EDEBE9] pb-4 mb-4">
           <h3 className="text-base font-semibold text-gray-800 mb-4">Company and Warehouse Selection</h3>
         </div>
@@ -395,7 +655,7 @@ export default function Home() {
               <button
                 onClick={handleRefreshExcel}
                 disabled={refreshingExcel}
-                className="px-4 py-2 bg-[#0078D4] text-white rounded-sm hover:bg-[#106EBE] active:bg-[#005A9E] disabled:opacity-50 disabled:cursor-not-allowed font-medium transition-colors text-sm"
+                className="px-4 py-2 bg-[#0078D4] text-white rounded-sm hover:bg-[#106EBE] active:bg-[#005A9E] disabled:opacity-50 disabled:cursor-not-allowed font-medium transition-all text-sm shadow-[0_2px_4px_rgba(0,120,212,0.3)] hover:shadow-[0_4px_8px_rgba(0,120,212,0.4)] active:shadow-[0_1px_2px_rgba(0,120,212,0.3)] active:scale-[0.97]"
               >
                 {refreshingExcel ? 'Refreshing...' : 'Refresh Excel'}
               </button>
@@ -407,11 +667,11 @@ export default function Home() {
               )}
             </div>
             <span className="text-xs text-gray-500">or</span>
-            <label className="px-3 py-2 border border-[#C8C6C4] bg-white text-gray-800 rounded-sm hover:bg-[#F3F2F1] cursor-pointer text-sm font-medium">
+            <label className="px-3 py-2 border border-[#C8C6C4] bg-white text-gray-800 rounded-sm hover:bg-[#F3F2F1] cursor-pointer text-sm font-medium shadow-[0_1px_2px_rgba(0,0,0,0.05)] hover:shadow-[0_2px_4px_rgba(0,0,0,0.1)] transition-all active:scale-[0.97]">
               Upload File
               <input
                 type="file"
-                accept=".csv,.txt"
+                accept=".csv,.txt,.xlsx,.xls,text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 onChange={handleStockCountFile}
                 className="hidden"
               />
@@ -435,7 +695,7 @@ export default function Home() {
                 setSelectedCompany('');
                 setSelectedWarehouse('');
               }}
-              className="px-3 py-2 border border-[#C8C6C4] bg-white text-gray-800 rounded-sm focus:outline-none focus:ring-2 focus:ring-[#0078D4] focus:border-[#0078D4]"
+              className="px-3 py-2 border border-[#C8C6C4] bg-white text-gray-800 rounded-sm focus:outline-none focus:ring-2 focus:ring-[#0078D4] focus:border-[#0078D4] shadow-[0_1px_2px_rgba(0,0,0,0.05)] transition-all"
             >
               <option value="">-- All Dates --</option>
               {dates.map(date => (
@@ -457,7 +717,7 @@ export default function Home() {
                 setSelectedCompany(e.target.value);
                 setSelectedWarehouse('');
               }}
-              className="px-3 py-2 border border-[#C8C6C4] bg-white text-gray-800 rounded-sm focus:outline-none focus:ring-2 focus:ring-[#0078D4] focus:border-[#0078D4]"
+              className="px-3 py-2 border border-[#C8C6C4] bg-white text-gray-800 rounded-sm focus:outline-none focus:ring-2 focus:ring-[#0078D4] focus:border-[#0078D4] shadow-[0_1px_2px_rgba(0,0,0,0.05)] transition-all"
             >
               <option value="">-- Select Company --</option>
               {companies.map(comp => (
@@ -476,7 +736,7 @@ export default function Home() {
             <select
               value={selectedWarehouse}
               onChange={(e) => setSelectedWarehouse(e.target.value)}
-              className="px-3 py-2 border border-[#C8C6C4] bg-white text-gray-800 rounded-sm focus:outline-none focus:ring-2 focus:ring-[#0078D4] focus:border-[#0078D4] disabled:bg-[#F3F2F1] disabled:text-gray-500 disabled:cursor-not-allowed"
+              className="px-3 py-2 border border-[#C8C6C4] bg-white text-gray-800 rounded-sm focus:outline-none focus:ring-2 focus:ring-[#0078D4] focus:border-[#0078D4] disabled:bg-[#F3F2F1] disabled:text-gray-500 disabled:cursor-not-allowed shadow-[0_1px_2px_rgba(0,0,0,0.05)] transition-all"
               disabled={warehouses.length === 0}
             >
               <option value="">-- Select Warehouse --</option>
@@ -492,13 +752,29 @@ export default function Home() {
           </div>
         )}
 
+        {/* Final Count checkbox */}
+        {fileUploaded && selectedCompany && (
+          <div className="flex items-center gap-2 pt-2">
+            <input
+              type="checkbox"
+              id="finalCount"
+              checked={isFinalCount}
+              onChange={(e) => setIsFinalCount(e.target.checked)}
+              className="w-4 h-4 text-[#0078D4] border-[#C8C6C4] rounded focus:ring-2 focus:ring-[#0078D4]"
+            />
+            <label htmlFor="finalCount" className="text-sm font-medium text-gray-700 cursor-pointer">
+              Final Count
+            </label>
+          </div>
+        )}
+
         <div className="flex gap-3 items-center pt-2">
           <button 
             onClick={saveSelection} 
-            className="px-4 py-2 bg-[#0078D4] text-white rounded-sm hover:bg-[#106EBE] active:bg-[#005A9E] disabled:opacity-50 disabled:cursor-not-allowed font-medium transition-colors"
-            disabled={!fileUploaded || !selectedCompany}
+            className="px-4 py-2 bg-[#0078D4] text-white rounded-sm hover:bg-[#106EBE] active:bg-[#005A9E] disabled:opacity-50 disabled:cursor-not-allowed font-medium transition-all shadow-[0_2px_4px_rgba(0,120,212,0.3)] hover:shadow-[0_4px_8px_rgba(0,120,212,0.4)] active:shadow-[0_1px_2px_rgba(0,120,212,0.3)] active:scale-[0.97]"
+            disabled={!fileUploaded || !selectedCompany || !selectedDate || !selectedWarehouse}
           >
-            Save
+            Start Count
           </button>
           {status && (
             <span className="ml-2 text-sm text-gray-600 bg-[#E1DFDD] px-3 py-1.5 rounded-sm">
@@ -512,7 +788,121 @@ export default function Home() {
             <span className="font-medium">Selected:</span> {selectedCompany}{selectedWarehouse ? ` - ${selectedWarehouse}` : ''}
           </div>
         )}
+        </div>
+
+        {/* Calendar */}
+        {renderCalendar()}
       </div>
+
+      {/* Calendar Date Detail Modal */}
+      {selectedCalendarDate && selectedCalendarDate.countsForDay.length > 0 && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" onClick={() => setSelectedCalendarDate(null)}>
+          <div className="bg-white dark:bg-[#2d2d2d] rounded-sm shadow-[0_8px_16px_rgba(0,0,0,0.2)] p-6 max-w-md w-full mx-4" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-gray-800 dark:text-gray-200">
+                Scheduled Counts - {new Date(selectedCalendarDate.dateStr).toLocaleDateString('en-GB', {
+                  day: '2-digit',
+                  month: '2-digit',
+                  year: 'numeric',
+                  weekday: 'long'
+                })}
+              </h3>
+              <button
+                onClick={() => setSelectedCalendarDate(null)}
+                className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            <div className="space-y-3">
+              {selectedCalendarDate.countsForDay.map((count, idx) => (
+                <div key={idx} className="p-4 border border-[#EDEBE9] dark:border-[#404040] rounded-sm bg-[#F3F2F1] dark:bg-[#353535]">
+                  <div className="grid gap-2 text-sm">
+                    {count.company && (
+                      <div>
+                        <span className="font-medium text-gray-700 dark:text-gray-300">Company:</span>
+                        <span className="ml-2 text-gray-800 dark:text-gray-200">{count.company}</span>
+                      </div>
+                    )}
+                    {count.warehouse && (
+                      <div>
+                        <span className="font-medium text-gray-700 dark:text-gray-300">Warehouse:</span>
+                        <span className="ml-2 text-gray-800 dark:text-gray-200">{count.warehouse}</span>
+                      </div>
+                    )}
+                    {count.notes && (
+                      <div>
+                        <span className="font-medium text-gray-700 dark:text-gray-300">Notes:</span>
+                        <span className="ml-2 text-gray-800 dark:text-gray-200">{count.notes}</span>
+                      </div>
+                    )}
+                    {!count.company && !count.warehouse && !count.notes && (
+                      <div className="text-gray-600 dark:text-gray-400">Scheduled count (no additional details)</div>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Final Counts History - Collapsible Section */}
+      {finalCounts.length > 0 && (
+        <div className="bg-white dark:bg-[#2d2d2d] rounded-sm border border-[#EDEBE9] dark:border-[#404040] shadow-[0_4px_8px_rgba(0,0,0,0.12),0_2px_4px_rgba(0,0,0,0.08)] transition-shadow hover:shadow-[0_6px_12px_rgba(0,0,0,0.15),0_3px_6px_rgba(0,0,0,0.1)]">
+          <button
+            onClick={() => setFinalCountsCollapsed(!finalCountsCollapsed)}
+            className="w-full flex items-center justify-between p-4 border-b border-[#EDEBE9] hover:bg-[#F3F2F1] transition-colors"
+          >
+            <h3 className="text-base font-semibold text-gray-800">Final Counts History</h3>
+            <span className="text-gray-600 text-sm">
+              {finalCountsCollapsed ? '▼' : '▲'}
+            </span>
+          </button>
+          {!finalCountsCollapsed && (
+            <div className="p-6">
+              <div className="overflow-auto border border-[#EDEBE9] rounded-sm">
+                <table className="min-w-full text-sm">
+                  <thead className="bg-[#F3F2F1] border-b border-[#EDEBE9]">
+                    <tr>
+                      <th className="p-3 text-left font-semibold text-gray-800">Date</th>
+                      <th className="p-3 text-left font-semibold text-gray-800">Company</th>
+                      <th className="p-3 text-left font-semibold text-gray-800">Warehouse</th>
+                      <th className="p-3 text-left font-semibold text-gray-800">Stock Take Date</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {finalCounts.map((count, idx) => {
+                      const countDate = new Date(count.timestamp);
+                      const formattedDate = countDate.toLocaleDateString('en-GB', {
+                        day: '2-digit',
+                        month: '2-digit',
+                        year: 'numeric',
+                        hour: '2-digit',
+                        minute: '2-digit'
+                      });
+                      const stockTakeDate = count.date 
+                        ? `${count.date.slice(0, 2)}/${count.date.slice(2, 4)}/${count.date.slice(4, 8)}`
+                        : '-';
+                      
+                      return (
+                        <tr key={idx} className="border-b border-[#EDEBE9] hover:bg-[#F3F2F1]">
+                          <td className="p-3 text-gray-800">{formattedDate}</td>
+                          <td className="p-3 text-gray-800">{count.company || '-'}</td>
+                          <td className="p-3 text-gray-800">{count.warehouse || '-'}</td>
+                          <td className="p-3 text-gray-800">{stockTakeDate}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

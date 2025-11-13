@@ -55,32 +55,34 @@ export default function PasswordProtect({ children }) {
   }
 
   return (
-    <div className="max-w-md mx-auto mt-12 p-6 border border-gray-700 rounded-lg shadow-lg bg-gray-800">
-      <h2 className="text-xl font-semibold mb-4">Password Required</h2>
-      <p className="text-sm text-gray-400 mb-4">
-        This page is restricted. Please enter the password to continue.
-      </p>
-      <form onSubmit={handleSubmit} className="space-y-4">
-        <div>
-          <label className="block text-sm font-medium mb-1">Password</label>
-          <input
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            className="w-full px-3 py-2 border border-gray-700 rounded bg-gray-900 text-gray-100"
-            autoFocus
-          />
-        </div>
-        {error && (
-          <div className="text-red-400 text-sm">{error}</div>
-        )}
-        <button
-          type="submit"
-          className="w-full px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
-        >
-          Authenticate
-        </button>
-      </form>
+    <div className="max-w-md mx-auto mt-12">
+      <div className="bg-white rounded-sm border border-[#EDEBE9] shadow-sm p-6">
+        <h2 className="text-xl font-semibold text-gray-800 mb-2">Password Required</h2>
+        <p className="text-sm text-gray-600 mb-6">
+          This page is restricted. Please enter the password to continue.
+        </p>
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Password</label>
+            <input
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              className="w-full px-3 py-2 border border-[#C8C6C4] bg-white text-gray-800 rounded-sm focus:outline-none focus:ring-2 focus:ring-[#0078D4] focus:border-[#0078D4]"
+              autoFocus
+            />
+          </div>
+          {error && (
+            <div className="text-sm text-[#D13438] bg-[#FDF6F6] px-3 py-2 rounded-sm">{error}</div>
+          )}
+          <button
+            type="submit"
+            className="w-full px-4 py-2 bg-[#0078D4] text-white rounded-sm hover:bg-[#106EBE] active:bg-[#005A9E] font-medium transition-colors active:scale-[0.97]"
+          >
+            Authenticate
+          </button>
+        </form>
+      </div>
     </div>
   );
 }

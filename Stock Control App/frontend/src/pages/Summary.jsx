@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { api } from '../lib/api';
 import { parseCountsToJson, parseJournalToJson } from '../lib/parser';
 import jsPDF from 'jspdf';
+import { processFile } from '../lib/excelUtils';
 
 export default function Summary() {
   const [journalCsv, setJournalCsv] = useState('');
@@ -189,21 +190,43 @@ export default function Summary() {
   async function handleJournalFile(e) {
     const file = e.target.files?.[0];
     if (!file) return;
-    const text = await file.text();
-    setJournalCsv(text);
-    const parsed = parseJournalToJson(text);
-    setRowsParsedJournal(parsed.entries?.length || 0);
-    // Auto-run is handled by useEffect
+    
+    await processFile(
+      file,
+      (csvText) => {
+        setJournalCsv(csvText);
+        const parsed = parseJournalToJson(csvText);
+        setRowsParsedJournal(parsed.entries?.length || 0);
+        // Update count display when journal is loaded
+        window.dispatchEvent(new Event('countsUpdated'));
+        // Auto-run is handled by useEffect
+      },
+      (errorMessage) => {
+        alert(`Error: ${errorMessage}`);
+        console.error('Error processing journal file:', errorMessage);
+      }
+    );
   }
 
   async function handleCountsFile(e) {
     const file = e.target.files?.[0];
     if (!file) return;
-    const text = await file.text();
-    setCountsCsv(text);
-    const parsed = parseCountsToJson(text);
-    setRowsParsedCounts(parsed.entries?.length || 0);
-    // Auto-run is handled by useEffect
+    
+    await processFile(
+      file,
+      (csvText) => {
+        setCountsCsv(csvText);
+        const parsed = parseCountsToJson(csvText);
+        setRowsParsedCounts(parsed.entries?.length || 0);
+        // Update count display when counts file is loaded
+        window.dispatchEvent(new Event('countsUpdated'));
+        // Auto-run is handled by useEffect
+      },
+      (errorMessage) => {
+        alert(`Error: ${errorMessage}`);
+        console.error('Error processing counts file:', errorMessage);
+      }
+    );
   }
 
   // Build expected stock take code from selections
@@ -365,7 +388,7 @@ export default function Summary() {
     const paginatedBins = sortedBins.slice(startIdx, endIdx);
     
     return (
-      <div className="mt-6 bg-white rounded-sm border border-[#EDEBE9] shadow-sm">
+      <div className="mt-6 bg-white dark:bg-[#2d2d2d] rounded-sm border border-[#EDEBE9] dark:border-[#404040] shadow-[0_4px_8px_rgba(0,0,0,0.12),0_2px_4px_rgba(0,0,0,0.08)] transition-shadow hover:shadow-[0_6px_12px_rgba(0,0,0,0.15),0_3px_6px_rgba(0,0,0,0.1)]">
         <button
           onClick={() => setOutputCollapsed(!outputCollapsed)}
           className="w-full flex items-center justify-between p-4 border-b border-[#EDEBE9] hover:bg-[#F3F2F1] transition-colors"
@@ -384,7 +407,7 @@ export default function Summary() {
                   <button
                     onClick={() => setCurrentPage(Math.max(1, currentPage - 1))}
                     disabled={currentPage === 1}
-                    className="px-3 py-1.5 border border-[#C8C6C4] bg-white text-gray-700 rounded-sm hover:bg-[#F3F2F1] disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium transition-colors"
+                    className="px-3 py-1.5 border border-[#C8C6C4] dark:border-[#505050] bg-white dark:bg-[#1a1a1a] text-gray-700 dark:text-gray-300 rounded-sm hover:bg-[#F3F2F1] dark:hover:bg-[#353535] disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium transition-all shadow-[0_1px_2px_rgba(0,0,0,0.05)] hover:shadow-[0_2px_4px_rgba(0,0,0,0.1)] active:scale-[0.97]"
                   >
                     Previous
                   </button>
@@ -394,7 +417,7 @@ export default function Summary() {
                   <button
                     onClick={() => setCurrentPage(Math.min(totalPages, currentPage + 1))}
                     disabled={currentPage === totalPages}
-                    className="px-3 py-1.5 border border-[#C8C6C4] bg-white text-gray-700 rounded-sm hover:bg-[#F3F2F1] disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium transition-colors"
+                    className="px-3 py-1.5 border border-[#C8C6C4] dark:border-[#505050] bg-white dark:bg-[#1a1a1a] text-gray-700 dark:text-gray-300 rounded-sm hover:bg-[#F3F2F1] dark:hover:bg-[#353535] disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium transition-all shadow-[0_1px_2px_rgba(0,0,0,0.05)] hover:shadow-[0_2px_4px_rgba(0,0,0,0.1)] active:scale-[0.97]"
                   >
                     Next
                   </button>
@@ -404,7 +427,7 @@ export default function Summary() {
                       setItemsPerPage(Number(e.target.value));
                       setCurrentPage(1);
                     }}
-                    className="px-2 py-1.5 border border-[#C8C6C4] bg-white text-gray-800 rounded-sm focus:outline-none focus:ring-2 focus:ring-[#0078D4] focus:border-[#0078D4] text-sm"
+                    className="px-2 py-1.5 border border-[#C8C6C4] bg-white text-gray-800 rounded-sm focus:outline-none focus:ring-2 focus:ring-[#0078D4] focus:border-[#0078D4] text-sm shadow-[0_1px_2px_rgba(0,0,0,0.05)] transition-all"
                   >
                     <option value={5}>5 per page</option>
                     <option value={10}>10 per page</option>
@@ -422,7 +445,7 @@ export default function Summary() {
               const binVarianceValue = itemsInBin.reduce((sum, v) => sum + (v.varianceValue || 0), 0);
               
               return (
-                <div key={binIdx} className="mb-6 bg-[#F3F2F1] rounded-sm border border-[#EDEBE9]">
+                <div key={binIdx} className="mb-6 bg-[#F3F2F1] rounded-sm border border-[#EDEBE9] shadow-[0_2px_4px_rgba(0,0,0,0.08)] transition-shadow hover:shadow-[0_4px_8px_rgba(0,0,0,0.12)]">
                   <div className="bg-white px-4 py-3 border-b border-[#EDEBE9]">
                     <h4 className="font-semibold text-[#0078D4]">Bin Location: {bin}</h4>
                     <div className="text-xs text-gray-600 mt-1">
@@ -560,14 +583,14 @@ export default function Summary() {
   return (
     <div className="grid gap-6">
       <div>
-        <h2 className="text-2xl font-semibold text-gray-800 mb-1">Stock Variance Summary</h2>
-        <p className="text-sm text-gray-600">Review and manage stock variances</p>
+        <h2 className="text-2xl font-semibold text-gray-800 dark:text-gray-200 mb-1">Stock Variance Summary</h2>
+        <p className="text-sm text-gray-600 dark:text-gray-400">Review and manage stock variances</p>
       </div>
       
       {/* Recount Groups Section */}
       {variances.length > 0 && (() => {
         return (
-          <div className="mb-6 bg-white rounded-sm border border-[#EDEBE9] shadow-sm">
+          <div className="mb-6 bg-white dark:bg-[#2d2d2d] rounded-sm border border-[#EDEBE9] dark:border-[#404040] shadow-[0_4px_8px_rgba(0,0,0,0.12),0_2px_4px_rgba(0,0,0,0.08)] transition-shadow hover:shadow-[0_6px_12px_rgba(0,0,0,0.15),0_3px_6px_rgba(0,0,0,0.1)]">
             <button
               onClick={() => setGroupsCollapsed(!groupsCollapsed)}
               className="w-full flex items-center justify-between p-4 border-b border-[#EDEBE9] hover:bg-[#F3F2F1] transition-colors"
@@ -605,7 +628,13 @@ export default function Summary() {
               
               // Export CSV function
               function exportGroups() {
-                const csvLines = ['Group,Bin Location,Item Code'];
+                const csvLines = ['Recount Groups'];
+                const username = sessionStorage.getItem('username');
+                if (username) {
+                  csvLines.push(`Prepared by,${username}`);
+                }
+                csvLines.push('');
+                csvLines.push('Group,Bin Location,Item Code');
                 // Iterate through groups starting from 1
                 for (let groupNum = 1; groupNum <= numberOfGroups; groupNum++) {
                   const group = groups[groupNum];
@@ -683,7 +712,17 @@ export default function Summary() {
                   pdf.text(`Bin Locations: ${group.join(', ')}`, 14, yPos);
                   yPos += 6;
                   pdf.text(`Total Items: ${groupItems.length}`, 14, yPos);
-                  yPos += 8;
+                  yPos += 6;
+                  
+                  // Add username if available (only on first group)
+                  if (groupNum === 1) {
+                    const username = sessionStorage.getItem('username');
+                    if (username) {
+                      pdf.text(`Prepared by: ${username}`, 14, yPos);
+                      yPos += 6;
+                    }
+                  }
+                  yPos += 2;
                   
                   // Table headers
                   headerY = yPos; // Store header row Y position
@@ -781,7 +820,7 @@ export default function Summary() {
                           setNumberOfGroups(val);
                           setCurrentPage(1);
                         }}
-                        className="w-20 px-2 py-1.5 border border-[#C8C6C4] bg-white text-gray-800 rounded-sm focus:outline-none focus:ring-2 focus:ring-[#0078D4] focus:border-[#0078D4]"
+                        className="w-20 px-2 py-1.5 border border-[#C8C6C4] bg-white text-gray-800 rounded-sm focus:outline-none focus:ring-2 focus:ring-[#0078D4] focus:border-[#0078D4] shadow-[0_1px_2px_rgba(0,0,0,0.05)] transition-all"
                       />
                     </label>
                     <span className="text-sm text-gray-600">
@@ -790,13 +829,13 @@ export default function Summary() {
                     <div className="ml-auto flex gap-2">
                       <button
                         onClick={exportGroups}
-                        className="px-4 py-2 bg-[#107C10] text-white rounded-sm hover:bg-[#0E6F0E] active:bg-[#0B5B0B] text-sm font-medium transition-colors"
+                        className="px-4 py-2 bg-[#107C10] text-white rounded-sm hover:bg-[#0E6F0E] active:bg-[#0B5B0B] text-sm font-medium transition-all shadow-[0_2px_4px_rgba(16,124,16,0.3)] hover:shadow-[0_4px_8px_rgba(16,124,16,0.4)] active:shadow-[0_1px_2px_rgba(16,124,16,0.3)] active:scale-[0.97]"
                       >
                         Export CSV
                       </button>
                       <button
                         onClick={exportGroupsToPDF}
-                        className="px-4 py-2 bg-[#0078D4] text-white rounded-sm hover:bg-[#106EBE] active:bg-[#005A9E] text-sm font-medium transition-colors"
+                        className="px-4 py-2 bg-[#0078D4] text-white rounded-sm hover:bg-[#106EBE] active:bg-[#005A9E] text-sm font-medium transition-all shadow-[0_2px_4px_rgba(0,120,212,0.3)] hover:shadow-[0_4px_8px_rgba(0,120,212,0.4)] active:shadow-[0_1px_2px_rgba(0,120,212,0.3)] active:scale-[0.97]"
                       >
                         Print to PDF
                       </button>
@@ -820,7 +859,7 @@ export default function Summary() {
                       });
                       
                       return (
-                        <div key={groupNum} className="p-4 bg-[#F3F2F1] rounded-sm border border-[#EDEBE9]">
+                        <div key={groupNum} className="p-4 bg-[#F3F2F1] rounded-sm border border-[#EDEBE9] shadow-[0_2px_4px_rgba(0,0,0,0.08)] transition-shadow hover:shadow-[0_4px_8px_rgba(0,0,0,0.12)]">
                           <div className="font-semibold text-[#0078D4] mb-3 flex items-center justify-between">
                             <span>Group {groupNum}</span>
                             <span className="text-sm text-gray-600 font-normal">
@@ -830,7 +869,7 @@ export default function Summary() {
                           <div className="text-sm text-gray-600 mb-3">
                             <span className="font-medium">Bin Locations:</span> {group.join(', ')}
                           </div>
-                          <div className="overflow-auto border border-[#EDEBE9] bg-white rounded-sm">
+                          <div className="overflow-auto border border-[#EDEBE9] bg-white rounded-sm shadow-[0_1px_2px_rgba(0,0,0,0.05)]">
                             <table className="min-w-full text-xs">
                               <thead className="bg-[#F3F2F1] border-b border-[#EDEBE9]">
                                 <tr>
@@ -881,9 +920,9 @@ export default function Summary() {
               </div>
               <input 
                 type="file" 
-                accept=".csv,.txt" 
+                accept=".csv,.txt,.xlsx,.xls,text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" 
                 onChange={handleJournalFile} 
-                className="px-3 py-2 border border-[#C8C6C4] bg-white text-gray-800 rounded-sm focus:outline-none focus:ring-2 focus:ring-[#0078D4] focus:border-[#0078D4] file:mr-4 file:py-1.5 file:px-4 file:rounded-sm file:border-0 file:text-sm file:font-medium file:bg-[#0078D4] file:text-white hover:file:bg-[#106EBE] cursor-pointer"
+                className="px-3 py-2 border border-[#C8C6C4] bg-white text-gray-800 rounded-sm focus:outline-none focus:ring-2 focus:ring-[#0078D4] focus:border-[#0078D4] file:mr-4 file:py-1.5 file:px-4 file:rounded-sm file:border-0 file:text-sm file:font-medium file:bg-[#0078D4] file:text-white hover:file:bg-[#106EBE] cursor-pointer shadow-[0_1px_2px_rgba(0,0,0,0.05)] transition-all"
               />
               {journalCsv && (
                 <div className="text-sm text-[#107C10] bg-[#DFF6DD] px-3 py-2 rounded-sm">
@@ -900,9 +939,9 @@ export default function Summary() {
               </div>
               <input 
                 type="file" 
-                accept=".csv,.txt" 
+                accept=".csv,.txt,.xlsx,.xls,text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" 
                 onChange={handleCountsFile} 
-                className="px-3 py-2 border border-[#C8C6C4] bg-white text-gray-800 rounded-sm focus:outline-none focus:ring-2 focus:ring-[#0078D4] focus:border-[#0078D4] file:mr-4 file:py-1.5 file:px-4 file:rounded-sm file:border-0 file:text-sm file:font-medium file:bg-[#0078D4] file:text-white hover:file:bg-[#106EBE] cursor-pointer"
+                className="px-3 py-2 border border-[#C8C6C4] bg-white text-gray-800 rounded-sm focus:outline-none focus:ring-2 focus:ring-[#0078D4] focus:border-[#0078D4] file:mr-4 file:py-1.5 file:px-4 file:rounded-sm file:border-0 file:text-sm file:font-medium file:bg-[#0078D4] file:text-white hover:file:bg-[#106EBE] cursor-pointer shadow-[0_1px_2px_rgba(0,0,0,0.05)] transition-all"
               />
               {countsCsv && (
                 <div className="text-sm text-[#107C10] bg-[#DFF6DD] px-3 py-2 rounded-sm">

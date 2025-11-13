@@ -1223,6 +1223,18 @@ app.post('/api/excel/refresh', async (req, res) => {
     const startTime = Date.now();
     console.log('[Excel Refresh] Starting refresh operation at', new Date().toISOString());
     
+    // Check if running on Windows (Excel COM automation is Windows-only)
+    const isWindows = process.platform === 'win32';
+    
+    if (!isWindows) {
+        console.log('[Excel Refresh] Non-Windows platform detected:', process.platform);
+        return res.status(501).json({ 
+            message: 'Excel refresh via macro is only available on Windows. On macOS/Linux, please upload the Excel file directly or use the file upload feature.',
+            platform: process.platform,
+            suggestion: 'Use the file upload button to upload your Excel file (.xlsx or .xls) instead.'
+        });
+    }
+    
     try {
         const excelFilePath = path.join(__dirname, '..', 'RefreshExcel.xlsm');
         const outputCsvPath = path.join(__dirname, '..', 'Stock Count.csv');

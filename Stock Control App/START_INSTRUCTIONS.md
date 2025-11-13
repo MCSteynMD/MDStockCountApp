@@ -8,7 +8,7 @@ Double-click `start.bat` or run it from the command line:
 start.bat
 ```
 
-### Linux/Mac
+### macOS / Linux / Unix
 Make the script executable (first time only):
 ```bash
 chmod +x start.sh
@@ -18,6 +18,8 @@ Then run it:
 ```bash
 ./start.sh
 ```
+
+**Note**: The application is fully cross-platform and works on Windows, macOS, Linux, and other Unix-like systems. All npm scripts use cross-platform commands that work on any operating system.
 
 ## What the Script Does
 

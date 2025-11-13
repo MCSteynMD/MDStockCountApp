@@ -10,7 +10,10 @@ on:
 jobs:
   unit-tests:
     name: Unit Tests
-    runs-on: windows-latest
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     
     steps:
       - name: Checkout code
@@ -36,13 +39,16 @@ jobs:
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: coverage-report
+          name: coverage-report-${{ matrix.os }}
           path: coverage/
           retention-days: 7
 
   e2e-tests:
     name: E2E Tests
-    runs-on: windows-latest
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     needs: unit-tests
     
     steps:
@@ -61,12 +67,40 @@ jobs:
       - name: Install Playwright browsers
         run: npx playwright install --with-deps
       
-      - name: Start application
+      - name: Start application (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          npm start &
+          echo $! > /tmp/app.pid
+        shell: bash
+      
+      - name: Start application (Windows)
+        if: runner.os == 'Windows'
         run: |
           Start-Process npm -ArgumentList "start" -PassThru
         shell: pwsh
       
-      - name: Wait for server
+      - name: Wait for server (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          max_attempts=30
+          attempt=0
+          while [ $attempt -lt $max_attempts ]; do
+            if curl -f -s http://localhost:5173 > /dev/null 2>&1; then
+              echo "Server is ready!"
+              exit 0
+            fi
+            echo "Waiting for server... ($attempt/$max_attempts)"
+            sleep 2
+            attempt=$((attempt + 1))
+          done
+          echo "Server failed to start"
+          exit 1
+        shell: bash
+        continue-on-error: false
+      
+      - name: Wait for server (Windows)
+        if: runner.os == 'Windows'
         run: |
           $maxAttempts = 30
           $attempt = 0
@@ -93,11 +127,30 @@ jobs:
         env:
           CI: true
       
+      - name: Stop application (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          if [ -f /tmp/app.pid ]; then
+            kill $(cat /tmp/app.pid) 2>/dev/null || true
+            rm /tmp/app.pid
+          fi
+          pkill -f "node server-simple.js" || true
+          pkill -f "vite" || true
+        shell: bash
+        if: always()
+      
+      - name: Stop application (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          Get-Process | Where-Object {$_.ProcessName -like "*node*"} | Stop-Process -Force -ErrorAction SilentlyContinue
+        shell: pwsh
+        if: always()
+      
       - name: Upload test results
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: playwright-report
+          name: playwright-report-${{ matrix.os }}
           path: playwright-report/
           retention-days: 7
       
@@ -105,7 +158,7 @@ jobs:
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: test-screenshots
+          name: test-screenshots-${{ matrix.os }}
           path: test-results/
           retention-days: 7
 

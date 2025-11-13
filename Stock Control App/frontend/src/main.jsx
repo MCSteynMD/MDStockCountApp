@@ -5,8 +5,9 @@ import { createBrowserRouter, RouterProvider, Navigate } from 'react-router-dom'
 import { ThemeProvider } from './theme/ThemeContext'
 import AppLayout from './shell/AppLayout'
 import Home from './pages/Home'
-import Reconcile from './pages/Reconcile'
+import Report from './pages/Report'
 import Summary from './pages/Summary'
+import Settings from './pages/Settings'
 import ProtectedRoute from './components/ProtectedRoute'
 
 const router = createBrowserRouter([
@@ -16,16 +17,20 @@ const router = createBrowserRouter([
     children: [
       { index: true, element: <Home /> },
       { 
-        path: 'reconcile', 
+        path: 'report', 
         element: (
           <ProtectedRoute>
-            <Reconcile />
+            <Report />
           </ProtectedRoute>
         ) 
       },
       { 
         path: 'summary', 
         element: <Summary />
+      },
+      {
+        path: 'settings',
+        element: <Settings />
       },
       // Redirect any unknown routes to Home
       { path: '*', element: <Navigate to="/" replace /> },

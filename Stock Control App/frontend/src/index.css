@@ -16,6 +16,14 @@
   --d365-gray-800: #201F1E;
   --d365-border: #EDEBE9;
   --d365-shadow: 0 1.6px 3.6px rgba(0, 0, 0, 0.13), 0 0.3px 0.9px rgba(0, 0, 0, 0.11);
+  --d365-shadow-sm: 0 2px 4px rgba(0, 0, 0, 0.08), 0 1px 2px rgba(0, 0, 0, 0.06);
+  --d365-shadow-md: 0 4px 8px rgba(0, 0, 0, 0.12), 0 2px 4px rgba(0, 0, 0, 0.08);
+  --d365-shadow-lg: 0 8px 16px rgba(0, 0, 0, 0.15), 0 4px 8px rgba(0, 0, 0, 0.1);
+  --d365-shadow-hover: 0 6px 12px rgba(0, 0, 0, 0.15), 0 3px 6px rgba(0, 0, 0, 0.1);
+  --header-dark: #1a1a1a;
+  --header-border: #2d2d2d;
+  --banner-purple: #e8d5ff;
+  --banner-purple-dark: #d0b0ff;
 }
 
 * {
@@ -53,7 +61,7 @@ button {
   font-weight: 400;
   font-family: inherit;
   cursor: pointer;
-  transition: all 0.1s ease;
+  transition: all 0.15s ease;
   background-color: var(--d365-blue);
   color: white;
 }
@@ -67,6 +75,163 @@ button:focus,
 button:focus-visible {
   outline: 2px solid var(--d365-blue);
   outline-offset: 2px;
+}
+
+/* Button animations - subtle feedback */
+button:not(:disabled):hover {
+  transform: translateY(-1px);
+}
+
+button:not(:disabled):active {
+  transform: translateY(0) scale(0.97);
+}
+
+/* Smooth transitions for interactive elements */
+a, button, input, select, label {
+  transition: all 0.15s ease;
+}
+
+/* Dark mode styles - Comprehensive app-wide dark mode */
+.dark {
+  color-scheme: dark;
+}
+
+.dark body {
+  background-color: #1a1a1a !important;
+  color: #e0e0e0 !important;
+}
+
+/* Main container backgrounds */
+.dark .min-h-screen.bg-\\[#FAF9F8\\] {
+  background-color: #1a1a1a !important;
+}
+
+.dark .bg-\\[#FAF9F8\\] {
+  background-color: #1a1a1a !important;
+}
+
+.dark .bg-white {
+  background-color: #2d2d2d !important;
+}
+
+/* Text colors */
+.dark .text-gray-800 {
+  color: #e0e0e0 !important;
+}
+
+.dark .text-gray-600 {
+  color: #b0b0b0 !important;
+}
+
+.dark .text-gray-700 {
+  color: #d0d0d0 !important;
+}
+
+.dark .text-gray-500 {
+  color: #a0a0a0 !important;
+}
+
+.dark .text-gray-400 {
+  color: #909090 !important;
+}
+
+.dark .text-gray-300 {
+  color: #c0c0c0 !important;
+}
+
+.dark .text-gray-200 {
+  color: #d0d0d0 !important;
+}
+
+/* Border colors */
+.dark .border-\\[#EDEBE9\\] {
+  border-color: #404040 !important;
+}
+
+.dark .border-\\[#C8C6C4\\] {
+  border-color: #505050 !important;
+}
+
+.dark .border-\\[#2d2d2d\\] {
+  border-color: #505050 !important;
+}
+
+/* Background colors */
+.dark .bg-\\[#F3F2F1\\] {
+  background-color: #353535 !important;
+}
+
+.dark .hover\\:bg-\\[#F3F2F1\\]:hover {
+  background-color: #404040 !important;
+}
+
+.dark .bg-\\[#E1DFDD\\] {
+  background-color: #404040 !important;
+}
+
+/* Header - keep dark in dark mode, but adjust if needed */
+.dark header.bg-\\[#1a1a1a\\] {
+  background-color: #1a1a1a !important;
+  border-color: #2d2d2d !important;
+}
+
+/* Sidebar - already dark, but ensure consistency */
+.dark aside.bg-\\[#1a1a1a\\] {
+  background-color: #1a1a1a !important;
+  border-color: #2d2d2d !important;
+}
+
+/* Banner - adjust for dark mode */
+.dark .bg-\\[#2d1f16\\] {
+  background-color: #1a1a1a !important;
+  opacity: 0.9;
+}
+
+/* Additional dark mode overrides for any missed elements */
+.dark h1, .dark h2, .dark h3, .dark h4, .dark h5, .dark h6 {
+  color: #e0e0e0 !important;
+}
+
+/* Form elements */
+.dark input,
+.dark select,
+.dark textarea {
+  background-color: #2d2d2d !important;
+  color: #e0e0e0 !important;
+  border-color: #505050 !important;
+}
+
+.dark input:focus,
+.dark select:focus,
+.dark textarea:focus {
+  border-color: var(--d365-blue) !important;
+  background-color: #353535 !important;
+}
+
+/* Table styles */
+.dark table {
+  color: #e0e0e0 !important;
+}
+
+.dark thead {
+  background-color: #353535 !important;
+}
+
+.dark tbody tr {
+  border-color: #404040 !important;
+}
+
+.dark tbody tr:hover {
+  background-color: #353535 !important;
+}
+
+/* Links */
+.dark a {
+  color: var(--d365-blue) !important;
+}
+
+.dark a:hover {
+  color: var(--d365-blue-hover) !important;
 }
 
 

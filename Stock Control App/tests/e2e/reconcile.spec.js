@@ -1,12 +1,12 @@
 import { test, expect } from '@playwright/test';
 
-test.describe('Reconcile Page', () => {
+test.describe('Report Page', () => {
   test.beforeEach(async ({ page }) => {
-    await page.goto('/reconcile');
+    await page.goto('/report');
     await page.waitForLoadState('networkidle');
   });
 
-  test('should display reconcile page', async ({ page }) => {
+  test('should display report page', async ({ page }) => {
     // Wait for page to load
     await page.waitForLoadState('domcontentloaded');
     
@@ -14,9 +14,9 @@ test.describe('Reconcile Page', () => {
     const header = page.locator('h1, h2, h3').first();
     await expect(header).toBeVisible({ timeout: 10000 });
     
-    // Check for reconcile-related text anywhere on page
+    // Check for report-related text anywhere on page
     const pageContent = await page.textContent('body');
-    expect(pageContent).toMatch(/Reconcile|Journal|Count|Stock/i);
+    expect(pageContent).toMatch(/Report|Journal|Count|Stock/i);
   });
 
   test('should have file upload inputs', async ({ page }) => {

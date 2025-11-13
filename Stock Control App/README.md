@@ -51,6 +51,16 @@ A comprehensive web application for managing inventory, stock levels, and user a
 - MongoDB (v4.4 or higher)
 - npm or yarn package manager
 
+## Platform Support
+
+This application is **fully cross-platform** and works on:
+- ✅ **Windows** (Windows 10/11)
+- ✅ **macOS** (all versions)
+- ✅ **Linux** (all distributions)
+- ✅ **Unix-like systems**
+
+All scripts and commands use cross-platform Node.js/npm commands that work identically on all operating systems.
+
 ## Installation
 
 1. **Clone or download the project**
